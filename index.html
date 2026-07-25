@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Carta Psicrométrica ASHRAE</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <main class="layout">
+    <aside class="sidebar">
+      <h1>PSICROMETRIA</h1>
+      <section class="panel">
+        <h2>Métricas do gráfico</h2>
+        <label><input type="checkbox" data-layer="dryBulb" checked /> Temperatura de bulbo seco</label>
+        <label><input type="checkbox" data-layer="humidityRatio" checked /> Umidade absoluta</label>
+        <label><input type="checkbox" data-layer="relativeHumidity" checked /> Umidade relativa</label>
+        <label><input type="checkbox" data-layer="wetBulb" checked /> Temperatura de bulbo úmido</label>
+        <label><input type="checkbox" data-layer="vaporPressure" checked /> Pressão de vapor</label>
+        <label><input type="checkbox" data-layer="specificVolume" checked /> Volume específico</label>
+        <label><input type="checkbox" data-layer="enthalpy" checked /> Entalpia</label>
+      </section>
+      <section class="panel">
+        <h2>Indicador</h2>
+        <div id="indicator" class="indicator"></div>
+      </section>
+      <section class="panel">
+        <h2>Leitura MAHU</h2>
+        <button id="open-camera-btn" type="button" class="action-btn">Capturar monitor MAHU</button>
+        <input id="mahu-image-input" type="file" accept="image/*" capture="environment" hidden />
+        <div id="mahu-status" class="status-text">Fotografe o monitor para atualizar os pontos automaticamente.</div>
+
+        <form id="mahu-review" class="review" hidden>
+          <h3>Confira os valores lidos</h3>
+          <div id="mahu-fields"></div>
+          <button type="submit" class="action-btn">Aplicar à carta</button>
+          <button type="button" id="mahu-discard" class="action-btn action-btn--ghost">Descartar leitura</button>
+        </form>
+      </section>
+    </aside>
+
+    <section class="content">
+      <header>
+        <h2>Psychrometric Chart</h2>
+      </header>
+      <canvas id="chart" width="1200" height="760"></canvas>
+      <section class="table-wrap">
+        <h3>Tabela de propriedades calculadas</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>Ponto</th>
+              <th>TBS (°C)</th>
+              <th>W (g/kg)</th>
+              <th>UR (%)</th>
+              <th>h (kJ/kg)</th>
+              <th>TBU (°C)</th>
+              <th>Vol. (m³/kg)</th>
+            </tr>
+          </thead>
+          <tbody id="properties-body"></tbody>
+        </table>
+      </section>
+    </section>
+  </main>
+
+  <div id="camera-modal" class="modal" hidden>
+    <div class="modal-card">
+      <h2>Capturar monitor MAHU</h2>
+      <div class="camera-frame">
+        <video id="camera-video" playsinline autoplay muted></video>
+        <div class="camera-guide" aria-hidden="true"></div>
+      </div>
+      <p id="camera-hint" class="status-text">Encaixe a tela do MAHU dentro da moldura e mantenha o enquadramento estável.</p>
+      <div class="modal-actions">
+        <button type="button" id="camera-shoot" class="action-btn">Tirar foto</button>
+        <button type="button" id="camera-switch" class="action-btn action-btn--ghost">Trocar câmera</button>
+        <button type="button" id="camera-file" class="action-btn action-btn--ghost">Escolher arquivo</button>
+        <button type="button" id="camera-close" class="action-btn action-btn--ghost">Cancelar</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="api.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
