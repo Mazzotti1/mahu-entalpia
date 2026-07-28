@@ -1,0 +1,40 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+  /* O layout de duas colunas colapsa a 1100px, como no CSS original. */
+  --breakpoint-desk: 1100px;
+}
+
+:root {
+  color-scheme: light;
+}
+
+body {
+  background-color: var(--color-slate-50);
+  color: var(--color-slate-900);
+}
+
+/* Barra indeterminada: usada quando há trabalho em curso sem fração conhecida — o OCR
+   acontece numa chamada só e o servidor não reporta progresso. */
+@keyframes barra-indeterminada {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(400%);
+  }
+}
+
+.barra-indeterminada {
+  animation: barra-indeterminada 1.3s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .barra-indeterminada {
+    animation: none;
+    transform: none;
+    width: 100%;
+    opacity: 0.5;
+  }
+}

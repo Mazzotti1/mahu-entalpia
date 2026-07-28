@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 from functools import lru_cache
 
@@ -18,6 +19,22 @@ CANON_HEIGHT = 480
 # essa resolução fora justamente onde ela importa (dígitos de ~10 px).
 SUPERSAMPLE = 4
 
+# --- Alinhamento por gabarito -------------------------------------------------------
+# O painel é uma tela de software fixa: o desenho (dutos, ventiladores, rótulos) é idêntico
+# em qualquer foto e só os números mudam. Casar a foto contra um gabarito por homografia
+# resolve enquadramento, escala e perspectiva de uma vez, o que a detecção de quadrilátero
+# sozinha não faz — ela falha justamente quando a foto já vem recortada na tela e não há
+# moldura para encontrar.
+TEMPLATE_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "mahu_template.png")
+# Escala em que o casamento acontece: barata e com detalhe de sobra para os keypoints.
+MATCH_WIDTH = CANON_WIDTH
+MATCH_HEIGHT = CANON_HEIGHT
+# Abaixo disso a homografia não é confiável e o código cai na retificação por quadrilátero.
+MIN_HOMOGRAPHY_INLIERS = 25
+# Razão de Lowe: descarta casamentos ambíguos entre descritores parecidos.
+LOWE_RATIO = 0.75
+RANSAC_REPROJ_THRESHOLD = 3.0
+
 # Fração do quadro que a tela detectada precisa ocupar para a retificação valer a pena.
 MIN_SCREEN_AREA_RATIO = 0.25
 # Acima disso o "quadrilátero" achado é a borda do próprio quadro: a foto já é um
@@ -28,15 +45,21 @@ MAX_SCREEN_AREA_RATIO = 0.98
 MIN_NESTED_AREA_RATIO = 0.55
 
 # Regiões de cada valor no espaço canônico (x1, y1, x2, y2).
+#
+# Medidas como a união das caixas de texto detectadas em 9 fotos já alinhadas ao gabarito,
+# mais 3 px de margem. Antes do alinhamento elas precisavam de folga generosa para tolerar
+# a variação de enquadramento, e essa folga fazia o recorte engolir a unidade da linha de
+# baixo ("12,20" + "°C" vira lixo no OCR). Com a homografia a folga deixou de ser
+# necessária. Ao remexer nisso, meça de novo sobre imagens alinhadas — não sobre fotos cruas.
 ROIS = {
-    "mt_01": (12, 124, 66, 145),
-    "tt01": (78, 124, 132, 145),
-    "tt04": (354, 129, 400, 148),
-    "tt06": (598, 143, 645, 162),
-    "mt07": (952, 118, 1002, 142),
-    "tt07": (1024, 120, 1062, 140),
-    "umd_abs_pv": (914, 50, 946, 64),
-    "tt04_entalpia_pv": (360, 59, 392, 74),
+    "mt_01": (18, 124, 61, 145),
+    "tt01": (79, 124, 120, 145),
+    "tt04": (358, 129, 393, 146),
+    "tt06": (605, 143, 635, 160),
+    "mt07": (960, 120, 996, 139),
+    "tt07": (1024, 120, 1059, 140),
+    "umd_abs_pv": (919, 50, 942, 62),
+    "tt04_entalpia_pv": (360, 59, 387, 72),
 }
 
 # O monitor MAHU sempre mostra duas casas decimais, o que permite recuperar a vírgula
@@ -105,10 +128,15 @@ def _decode_image(image_bytes: bytes) -> np.ndarray:
 def _rectify(frame: np.ndarray) -> np.ndarray:
     """Normaliza a foto no espaço canônico ampliado.
 
-    Se a tela do monitor for identificada no quadro, aplica correção de perspectiva —
-    é o que permite fotografar de mão, com moldura e ângulo, e ainda assim recortar as
-    ROIs no lugar certo. Sem tela identificada, assume que a foto já é a tela.
+    Tenta primeiro casar a foto contra o gabarito por homografia, que é o caminho preciso:
+    resolve enquadramento, escala e perspectiva juntos, e não depende de a moldura do
+    monitor aparecer. Só quando o casamento não converge é que recai na detecção do
+    quadrilátero da tela, e daí no redimensionamento cru.
     """
+    alinhado = _align_to_template(frame)
+    if alinhado is not None:
+        return alinhado
+
     largura = CANON_WIDTH * SUPERSAMPLE
     altura = CANON_HEIGHT * SUPERSAMPLE
     quadrilatero = _find_screen_quad(frame)
@@ -123,6 +151,80 @@ def _rectify(frame: np.ndarray) -> np.ndarray:
     )
     matriz = cv2.getPerspectiveTransform(quadrilatero, destino)
     return cv2.warpPerspective(frame, matriz, (largura, altura), flags=cv2.INTER_CUBIC)
+
+
+def _match_features(image: np.ndarray) -> np.ndarray:
+    """Prepara a imagem para o casamento: escala fixa e contraste normalizado.
+
+    O CLAHE é o que permite casar fotos tiradas sob iluminações diferentes — sem ele os
+    descritores de uma foto clara não batem com os de uma escura.
+    """
+    cinza = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
+    cinza = cv2.resize(cinza, (MATCH_WIDTH, MATCH_HEIGHT), interpolation=cv2.INTER_AREA)
+    return cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(cinza)
+
+
+@lru_cache(maxsize=1)
+def _get_template():
+    """Descritores SIFT do gabarito, calculados uma vez por processo."""
+    template = cv2.imread(TEMPLATE_PATH, cv2.IMREAD_GRAYSCALE)
+    if template is None:
+        raise FileNotFoundError(f"Gabarito do MAHU não encontrado em {TEMPLATE_PATH}.")
+    detector = cv2.SIFT_create(nfeatures=4000)
+    keypoints, descritores = detector.detectAndCompute(_match_features(template), None)
+    return detector, keypoints, descritores
+
+
+def _align_to_template(frame: np.ndarray) -> np.ndarray | None:
+    """Casa a foto contra o gabarito e devolve o canônico ampliado, ou None se não casar."""
+    try:
+        detector, kp_gabarito, des_gabarito = _get_template()
+    except FileNotFoundError:
+        return None
+
+    keypoints, descritores = detector.detectAndCompute(_match_features(frame), None)
+    if descritores is None or len(keypoints) < MIN_HOMOGRAPHY_INLIERS:
+        return None
+
+    pares = cv2.BFMatcher().knnMatch(descritores, des_gabarito, k=2)
+    bons = [
+        melhor
+        for melhor, segundo in (par for par in pares if len(par) == 2)
+        if melhor.distance < LOWE_RATIO * segundo.distance
+    ]
+    if len(bons) < MIN_HOMOGRAPHY_INLIERS:
+        return None
+
+    origem = np.float32([keypoints[m.queryIdx].pt for m in bons]).reshape(-1, 1, 2)
+    destino = np.float32([kp_gabarito[m.trainIdx].pt for m in bons]).reshape(-1, 1, 2)
+    homografia, mascara = cv2.findHomography(
+        origem, destino, cv2.RANSAC, RANSAC_REPROJ_THRESHOLD
+    )
+    if homografia is None or int(mascara.sum()) < MIN_HOMOGRAPHY_INLIERS:
+        return None
+
+    # A homografia foi estimada no espaço de casamento. Compondo com as escalas de entrada
+    # e saída, a foto original vai direto ao canônico ampliado numa única reamostragem —
+    # passar por um intermediário reduzido jogaria fora a resolução dos dígitos.
+    altura_origem, largura_origem = frame.shape[:2]
+    escala_entrada = np.array(
+        [[MATCH_WIDTH / largura_origem, 0, 0], [0, MATCH_HEIGHT / altura_origem, 0], [0, 0, 1]],
+        dtype=np.float64,
+    )
+    escala_saida = np.array(
+        [
+            [SUPERSAMPLE * CANON_WIDTH / MATCH_WIDTH, 0, 0],
+            [0, SUPERSAMPLE * CANON_HEIGHT / MATCH_HEIGHT, 0],
+            [0, 0, 1],
+        ],
+        dtype=np.float64,
+    )
+    return cv2.warpPerspective(
+        frame,
+        escala_saida @ homografia @ escala_entrada,
+        (CANON_WIDTH * SUPERSAMPLE, CANON_HEIGHT * SUPERSAMPLE),
+        flags=cv2.INTER_CUBIC,
+    )
 
 
 def _find_screen_quad(frame: np.ndarray) -> np.ndarray | None:

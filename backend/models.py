@@ -46,6 +46,25 @@ class SimulacaoResponse(BaseModel):
     pontos: list[PontoResponse]
 
 
+class SimulacaoResumo(BaseModel):
+    """Entrada da lista de histórico: o suficiente para identificar sem carregar os pontos."""
+
+    id: int
+    nome: str
+    # ISO 8601 em UTC. O SQLite guarda "YYYY-MM-DD HH:MM:SS" sem fuso, e sem o sufixo Z o
+    # navegador interpretaria como hora local e mostraria a leitura no horário errado.
+    criado_em: str
+    total_pontos: int
+    # Estado do primeiro ponto, para distinguir leituras próximas na lista.
+    p1_tbs: float | None = None
+    p1_ur: float | None = None
+
+
+class SimulacaoListaResponse(BaseModel):
+    total: int
+    itens: list[SimulacaoResumo]
+
+
 class MahuCampoOCR(BaseModel):
     key: str
     label: str

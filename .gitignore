@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Banco gerado em runtime
+backend/simulador.db
+
+# Documentação e fotos de referência ficam fora do versionamento
+docs/
+
+# Node / Vite
+node_modules/
+frontend/dist/
+frontend/node_modules/
+*.local
+
+# Editores
+.vscode/
+.idea/

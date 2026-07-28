@@ -1,0 +1,50 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+      args:
+        # Índice CPU-only do torch: 2,05 GB de imagem em vez de 8,62 GB, e o easyocr roda
+        # com gpu=False de qualquer forma. Defina TORCH_INDEX_URL vazio para voltar às
+        # wheels com CUDA.
+        TORCH_INDEX_URL: "${TORCH_INDEX_URL-https://download.pytorch.org/whl/cpu}"
+    image: carta-psicrometrica-backend
+    environment:
+      CARTA_DB_PATH: /data/simulador.db
+      EASYOCR_MODULE_PATH: /models/easyocr
+      # Origens extras de CORS, separadas por vírgula. Só é preciso para quem chamar a API
+      # direto; pelo nginx o frontend já está na mesma origem.
+      CARTA_CORS_ORIGINS: "${CARTA_CORS_ORIGINS:-}"
+    volumes:
+      - carta-db:/data
+      # Os ~80 MB de modelos do easyocr baixam na primeira leitura e ficam aqui.
+      - easyocr-models:/models/easyocr
+    ports:
+      # Exposto só por conveniência: o Swagger fica em http://localhost:8000/docs.
+      # O frontend não usa esta porta — ele passa pelo proxy do nginx.
+      - "${CARTA_API_PORT:-8000}:8000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/')"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+    image: carta-psicrometrica-frontend
+    ports:
+      - "${CARTA_PORT:-8080}:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  carta-db:
+  easyocr-models:

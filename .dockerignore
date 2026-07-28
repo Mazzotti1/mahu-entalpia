@@ -1,0 +1,20 @@
+# Contexto do build do backend (raiz do projeto): só backend/ interessa.
+.git
+.gitignore
+.venv
+venv
+frontend
+docs
+scripts
+README.md
+docker-compose.yml
+*.md
+
+**/__pycache__
+**/*.py[cod]
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+
+# O banco vive num volume; copiar o local para dentro da imagem só cria confusão.
+backend/simulador.db

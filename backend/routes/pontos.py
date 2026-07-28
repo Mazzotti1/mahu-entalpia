@@ -1,7 +1,11 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+import asyncio
+from typing import AsyncIterator
+
+from fastapi import APIRouter, File, Header, HTTPException, Query, UploadFile
 from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import StreamingResponse
 
 from backend.database import get_db
 from backend.models import (
@@ -10,8 +14,11 @@ from backend.models import (
     PontoInput,
     PontoResponse,
     SimulacaoInput,
+    SimulacaoListaResponse,
     SimulacaoResponse,
+    SimulacaoResumo,
 )
+from backend.services.eventos import difusor
 from backend.services.mahu import construir_simulacao
 from backend.services.mahu_ocr import ler_mahu
 from backend.services.psicrometria import calcular_ponto
@@ -20,6 +27,13 @@ router = APIRouter(prefix="/api", tags=["psicrometria"])
 
 # Foto de celular fica na casa de 5-10 MB; acima disso é abuso e não leitura de painel.
 MAX_UPLOAD_BYTES = 15 * 1024 * 1024
+
+# Intervalo do keepalive do SSE. Precisa ser menor que o proxy_read_timeout do nginx
+# (300 s), senão uma conexão sem leituras é derrubada por ociosidade.
+HEARTBEAT_SEGUNDOS = 25.0
+# Teto do reenvio na reconexão: um cliente que ficou dias fora recarrega a lista inteira
+# em vez de receber um jato de eventos.
+MAX_CATCH_UP = 50
 
 
 @router.post("/calcular", response_model=PontoResponse)
@@ -126,7 +140,126 @@ async def _persistir_simulacao(simulacao: SimulacaoInput) -> SimulacaoResponse:
                 )
             )
 
+    # Depois do commit: quem recebe o aviso vai consultar a linha, e ela precisa existir.
+    difusor.publicar(simulacao_id)
+
     return SimulacaoResponse(id=simulacao_id, nome=simulacao.nome, pontos=pontos_final)
+
+
+def _para_iso_utc(criado_em: str | None) -> str:
+    """"2026-07-28 14:03:11" (CURRENT_TIMESTAMP do SQLite, em UTC) -> ISO 8601 com Z.
+
+    Sem o sufixo o navegador trataria a string como hora local e a lista de histórico
+    mostraria cada leitura deslocada pelo fuso.
+    """
+    if not criado_em:
+        return ""
+    return f"{criado_em.replace(' ', 'T')}Z"
+
+
+_SELECT_RESUMO = """
+    SELECT s.id, s.nome, s.criado_em,
+           (SELECT COUNT(*) FROM simulacao_pontos sp WHERE sp.simulacao_id = s.id)
+               AS total_pontos,
+           p.tbs AS p1_tbs, p.ur_calculado AS p1_ur
+    FROM simulacoes s
+    LEFT JOIN simulacao_pontos sp1
+           ON sp1.simulacao_id = s.id AND sp1.ordem = 1
+    LEFT JOIN pontos_psicrometricos p ON p.id = sp1.ponto_id
+"""
+
+
+async def _consultar_resumos(sufixo_sql: str, parametros: tuple) -> list[SimulacaoResumo]:
+    async with get_db() as db:
+        cursor = await db.execute(_SELECT_RESUMO + sufixo_sql, parametros)
+        rows = await cursor.fetchall()
+    return [
+        SimulacaoResumo(
+            id=row["id"],
+            nome=row["nome"],
+            criado_em=_para_iso_utc(row["criado_em"]),
+            total_pontos=row["total_pontos"],
+            p1_tbs=row["p1_tbs"],
+            p1_ur=row["p1_ur"],
+        )
+        for row in rows
+    ]
+
+
+@router.get("/simulacoes", response_model=SimulacaoListaResponse)
+async def listar_simulacoes(
+    limite: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+) -> SimulacaoListaResponse:
+    """Histórico das leituras, da mais recente para a mais antiga.
+
+    `criado_em` tem resolução de segundo e duas leituras podem cair no mesmo instante,
+    por isso o desempate por id — sem ele a paginação poderia repetir ou pular linhas.
+    """
+    async with get_db() as db:
+        total_query = await db.execute("SELECT COUNT(*) AS total FROM simulacoes")
+        total = (await total_query.fetchone())["total"]
+
+    itens = await _consultar_resumos(
+        "ORDER BY s.criado_em DESC, s.id DESC LIMIT ? OFFSET ?",
+        (limite, offset),
+    )
+    return SimulacaoListaResponse(total=total, itens=itens)
+
+
+def _evento_sse(resumo: SimulacaoResumo) -> str:
+    """Um evento SSE. O `id:` é o que o navegador devolve como Last-Event-ID ao reconectar."""
+    return f"id: {resumo.id}\nevent: simulacao\ndata: {resumo.model_dump_json()}\n\n"
+
+
+@router.get("/simulacoes/stream")
+async def stream_simulacoes(
+    last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
+) -> StreamingResponse:
+    """Empurra cada leitura nova assim que ela é gravada.
+
+    Na reconexão o navegador manda de volta o id do último evento que recebeu, e o que
+    ficou para trás é reenviado antes de o stream continuar — é o que cobre o celular
+    trocando de rede ou a aba suspensa.
+    """
+    try:
+        desde = int(last_event_id) if last_event_id else None
+    except ValueError:
+        desde = None
+
+    async def gerar() -> AsyncIterator[str]:
+        # A inscrição vem antes do catch-up: assim uma gravação que aconteça no meio do
+        # reenvio fica na fila em vez de se perder na janela entre as duas etapas.
+        async with difusor.inscrever() as fila:
+            if desde is not None:
+                for resumo in await _consultar_resumos(
+                    "WHERE s.id > ? ORDER BY s.id ASC LIMIT ?", (desde, MAX_CATCH_UP)
+                ):
+                    yield _evento_sse(resumo)
+
+            while True:
+                try:
+                    simulacao_id = await asyncio.wait_for(fila.get(), timeout=HEARTBEAT_SEGUNDOS)
+                except asyncio.TimeoutError:
+                    # Comentário SSE: mantém a conexão viva através de proxies que derrubam
+                    # conexões ociosas, e é ignorado pelo EventSource.
+                    yield ": keepalive\n\n"
+                    continue
+
+                resumos = await _consultar_resumos("WHERE s.id = ?", (simulacao_id,))
+                if resumos:
+                    yield _evento_sse(resumos[0])
+
+    return StreamingResponse(
+        gerar(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            # O nginx respeita este cabeçalho e desliga o buffer só para esta resposta.
+            # Sem isso ele segura os eventos e o stream chega em blocos, anulando o ganho.
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.get("/simulacao/{simulacao_id}", response_model=SimulacaoResponse)
