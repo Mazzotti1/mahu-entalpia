@@ -18,7 +18,7 @@ export default function App() {
 
       <section className="p-4">
         <header>
-          <h2 className="mb-2 text-[28px] font-semibold">Psychrometric Chart</h2>
+          <h2 className="mb-2 text-[28px] font-semibold">Carta psicrométrica</h2>
         </header>
         <PsychrometricChart />
         <PropertiesTable />

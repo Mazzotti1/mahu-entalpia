@@ -121,13 +121,24 @@ jobs:
           done
 
           # Exercita o caminho real: nginx do container -> backend -> SQLite.
+          #
+          # Três detalhes que fazem este bloco funcionar:
+          #  - 127.0.0.1 e não localhost: o nginx.conf tem só `listen 80` (IPv4) e o
+          #    /etc/hosts do Alpine resolve localhost para ::1 primeiro, dando
+          #    "Connection refused" mesmo com tudo no ar.
+          #  - `< /dev/null` em todo `exec`: sem isso ele consome o stdin, que aqui é o
+          #    próprio heredoc, e o resto do script é engolido sem executar nem avisar.
+          #  - a URL entre aspas: sem elas o bash trata o ? como glob.
           echo "Checando o frontend e o proxy para /api..."
-          $COMPOSE exec -T frontend wget -q -T 10 -O /dev/null http://localhost/ \
+          $COMPOSE exec -T frontend wget -q -T 10 -O /dev/null http://127.0.0.1/ < /dev/null \
             || { echo "  frontend não respondeu"; $COMPOSE logs --tail 50 frontend; exit 1; }
-          $COMPOSE exec -T frontend wget -q -T 10 -O - http://localhost/api/simulacoes?limite=1 \
-            | head -c 200 \
-            || { echo "  proxy /api não respondeu"; exit 1; }
-          echo
+
+          # Sem pipe para `head`: o SIGPIPE faria o wget sair diferente de zero e, com
+          # pipefail ligado, o health check reprovaria uma resposta perfeitamente boa.
+          resposta=$($COMPOSE exec -T frontend \
+            wget -q -T 10 -O - 'http://127.0.0.1/api/simulacoes?limite=1' < /dev/null) \
+            || { echo "  proxy /api não respondeu"; $COMPOSE logs --tail 50 backend; exit 1; }
+          echo "  API respondeu: ${resposta:0:160}"
           echo "Deploy verificado."
           REMOTO
 
