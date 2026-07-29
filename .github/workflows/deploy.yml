@@ -1,0 +1,141 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verificar:
+    name: Verificar
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Instalar dependências do frontend
+        working-directory: frontend
+        run: npm ci
+
+      - name: Typecheck e build do frontend
+        working-directory: frontend
+        run: npm run build
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Checar sintaxe do backend
+        run: python -m compileall -q backend
+
+      - name: Validar os arquivos do compose
+        run: |
+          docker compose -f docker-compose.yml config -q
+          # O compose de produção referencia variáveis que só existem no .env da VPS.
+          APP_DOMAIN=exemplo.com \
+          LETSENCRYPT_EMAIL=ci@exemplo.com \
+          NGINX_PROXY_NETWORK=proxy \
+            docker compose -f docker-compose.server.yml config -q
+
+      - name: Conferir que o gabarito do OCR está versionado
+        run: test -f backend/assets/mahu_template.png
+
+  deploy:
+    name: Deploy na VPS
+    needs: verificar
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production
+    steps:
+      - name: Configurar chave SSH
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          # Chave pública do host fixada em segredo: sem isso o primeiro deploy aceitaria
+          # qualquer servidor que atendesse naquele IP.
+          printf '%s\n' "${{ secrets.VPS_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: Atualizar e subir
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_PATH: ${{ vars.VPS_PATH || '/home/mahu-entalpia' }}
+        run: |
+          ssh -i ~/.ssh/id_deploy -o BatchMode=yes "$VPS_USER@$VPS_HOST" \
+            "APP_DIR='$VPS_PATH' COMMIT='${{ github.sha }}' bash -euo pipefail -s" <<'REMOTO'
+          cd "$APP_DIR"
+
+          echo "::group::Atualizando o código"
+          git fetch --prune origin
+          # reset --hard preserva arquivos não rastreados, então o .env da VPS sobrevive.
+          git reset --hard "$COMMIT"
+          git --no-pager log -1 --format='  %h %s (%an)'
+          echo "::endgroup::"
+
+          echo "::group::Construindo as imagens"
+          docker compose -f docker-compose.server.yml build
+          echo "::endgroup::"
+
+          echo "::group::Subindo os serviços"
+          docker compose -f docker-compose.server.yml up -d --remove-orphans
+          echo "::endgroup::"
+          REMOTO
+
+      - name: Health check
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_PATH: ${{ vars.VPS_PATH || '/home/mahu-entalpia' }}
+        run: |
+          ssh -i ~/.ssh/id_deploy -o BatchMode=yes "$VPS_USER@$VPS_HOST" \
+            "APP_DIR='$VPS_PATH' bash -euo pipefail -s" <<'REMOTO'
+          cd "$APP_DIR"
+          COMPOSE="docker compose -f docker-compose.server.yml"
+
+          # O backend carrega os modelos de OCR na primeira leitura, mas o /
+          # responde antes disso; start_period do healthcheck é 30 s.
+          echo "Aguardando o backend ficar saudável..."
+          for tentativa in $(seq 1 30); do
+            estado=$($COMPOSE ps --format '{{.Health}}' backend 2>/dev/null | head -1)
+            [ "$estado" = "healthy" ] && { echo "  backend: healthy"; break; }
+            if [ "$tentativa" = "30" ]; then
+              echo "  backend não ficou saudável (último estado: '${estado:-desconhecido}')"
+              $COMPOSE logs --tail 50 backend
+              exit 1
+            fi
+            sleep 5
+          done
+
+          # Exercita o caminho real: nginx do container -> backend -> SQLite.
+          echo "Checando o frontend e o proxy para /api..."
+          $COMPOSE exec -T frontend wget -q -T 10 -O /dev/null http://localhost/ \
+            || { echo "  frontend não respondeu"; $COMPOSE logs --tail 50 frontend; exit 1; }
+          $COMPOSE exec -T frontend wget -q -T 10 -O - http://localhost/api/simulacoes?limite=1 \
+            | head -c 200 \
+            || { echo "  proxy /api não respondeu"; exit 1; }
+          echo
+          echo "Deploy verificado."
+          REMOTO
+
+      - name: Limpar imagens órfãs
+        if: success()
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          ssh -i ~/.ssh/id_deploy -o BatchMode=yes "$VPS_USER@$VPS_HOST" \
+            'docker image prune -f --filter "until=168h"'
