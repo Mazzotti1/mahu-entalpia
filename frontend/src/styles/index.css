@@ -22,6 +22,15 @@ body {
   color: var(--color-slate-900);
 }
 
+/* O Safari do iOS dá zoom ao focar um campo cuja fonte é menor que 16px — e os painéis
+   inteiros usam 13px. Fixar 16px nos campos mata o zoom sem tocar no resto do layout nem
+   desabilitar o pinch-to-zoom (que a carta precisa). */
+input,
+select,
+textarea {
+  font-size: 16px;
+}
+
 /* Barra indeterminada: usada quando há trabalho em curso sem fração conhecida — o OCR
    acontece numa chamada só e o servidor não reporta progresso. */
 @keyframes barra-indeterminada {

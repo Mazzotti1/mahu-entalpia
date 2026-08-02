@@ -6,18 +6,12 @@ import { useCamera } from "@/hooks/useCamera";
 interface CameraModalProps {
   onCapturar: (file: File) => void;
   onFechar: () => void;
-  onEscolherArquivo: () => void;
   /** Chamado quando a câmera não abre; o pai cai no seletor de arquivos. */
   onIndisponivel: (mensagem: string) => void;
 }
 
-export function CameraModal({
-  onCapturar,
-  onFechar,
-  onEscolherArquivo,
-  onIndisponivel,
-}: CameraModalProps) {
-  const { videoRef, dica, indisponivel, trocarCamera, capturar } = useCamera(true);
+export function CameraModal({ onCapturar, onFechar, onIndisponivel }: CameraModalProps) {
+  const { videoRef, dica, indisponivel, capturar } = useCamera(true);
 
   useEffect(() => {
     if (indisponivel) {
@@ -52,7 +46,7 @@ export function CameraModal({
       {/*
         Deitado o modal vira duas colunas: a dica manda segurar o celular na horizontal,
         então é nessa orientação que ele precisa caber. Empilhado, o vídeo mais o título
-        mais os quatro botões estouram os ~390px de altura de um celular na horizontal.
+        mais os botões estouram os ~390px de altura de um celular na horizontal.
       */}
       <div className="flex max-h-full w-[min(720px,100%)] flex-col overflow-y-auto rounded-xl bg-white p-4 paisagem:w-full paisagem:flex-row paisagem:gap-3 paisagem:p-3">
         <h2 className="mb-3 text-lg font-semibold paisagem:hidden">Capturar monitor MAHU</h2>
@@ -87,12 +81,6 @@ export function CameraModal({
           <div className="mt-3 flex flex-wrap gap-2 paisagem:flex-col paisagem:flex-nowrap">
             <ActionButton className="flex-1 basis-35" onClick={() => void tirarFoto()}>
               Tirar foto
-            </ActionButton>
-            <ActionButton variante="ghost" className="flex-1 basis-35" onClick={trocarCamera}>
-              Trocar câmera
-            </ActionButton>
-            <ActionButton variante="ghost" className="flex-1 basis-35" onClick={onEscolherArquivo}>
-              Escolher arquivo
             </ActionButton>
             <ActionButton variante="ghost" className="flex-1 basis-35" onClick={onFechar}>
               Cancelar

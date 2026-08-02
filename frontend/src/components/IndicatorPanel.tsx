@@ -20,17 +20,20 @@ interface Leitura {
 function lerEstado({ tbs, wKgKg }: ProbeState): Leitura[] {
   const pressaoVapor = pressaoVaporDeW(wKgKg);
   return [
-    { rotulo: "Dry Bulb", valor: `${formatarNumero(tbs, 2)} °C` },
-    { rotulo: "Rel Humidity", valor: `${formatarNumero(wParaUr(wKgKg, tbs), 2)} %` },
-    { rotulo: "Abs Humidity", valor: `${formatarNumero(wKgKg * 1000, 4)} g/kg` },
-    { rotulo: "Vap Pressure", valor: `${formatarNumero(pressaoVapor / 1000, 4)} kPa` },
-    { rotulo: "Air Volume", valor: `${formatarNumero(volumeEspecifico(tbs, wKgKg), 4)} m³/kg` },
-    { rotulo: "Enthalpy", valor: `${formatarNumero(calcularEntalpia(tbs, wKgKg), 4)} kJ/kg` },
+    { rotulo: "Bulbo seco", valor: `${formatarNumero(tbs, 2)} °C` },
+    { rotulo: "Umidade relativa", valor: `${formatarNumero(wParaUr(wKgKg, tbs), 2)} %` },
+    { rotulo: "Umidade absoluta", valor: `${formatarNumero(wKgKg * 1000, 4)} g/kg` },
+    { rotulo: "Pressão de vapor", valor: `${formatarNumero(pressaoVapor / 1000, 4)} kPa` },
     {
-      rotulo: "Dew Point",
+      rotulo: "Volume específico",
+      valor: `${formatarNumero(volumeEspecifico(tbs, wKgKg), 4)} m³/kg`,
+    },
+    { rotulo: "Entalpia", valor: `${formatarNumero(calcularEntalpia(tbs, wKgKg), 4)} kJ/kg` },
+    {
+      rotulo: "Ponto de orvalho",
       valor: `${formatarNumero(pontoOrvalhoDePressaoVapor(pressaoVapor), 2)} °C`,
     },
-    { rotulo: "Wet Bulb", valor: `${formatarNumero(calcTbu(tbs, wKgKg), 2)} °C` },
+    { rotulo: "Bulbo úmido", valor: `${formatarNumero(calcTbu(tbs, wKgKg), 2)} °C` },
   ];
 }
 

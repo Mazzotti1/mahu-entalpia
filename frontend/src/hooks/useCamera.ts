@@ -14,14 +14,31 @@ const DICA_PADRAO =
   "preenche o quadro e os números saem grandes.\n" +
   "Encaixe a tela inteira na moldura, aproxime até preencher e evite reflexo no vidro.";
 
-type CameraFacing = "environment" | "user";
+/**
+ * Alguns aparelhos abrem a traseira já com zoom digital (é comum onde a câmera "principal"
+ * é um recorte de um sensor maior). Zoom digital só interpola: perde detalhe justamente nos
+ * dígitos, e ainda corta a tela do MAHU fora da moldura. Volta para o mínimo quando o
+ * aparelho expõe a capacidade — nem todo navegador expõe, e aí não há o que fazer.
+ */
+function zerarZoom(track: MediaStreamTrack): void {
+  // `zoom` vem da extensão de captura de imagem e não está nos tipos padrão do DOM.
+  const capacidades = track.getCapabilities?.() as { zoom?: { min: number } } | undefined;
+  const minimo = capacidades?.zoom?.min;
+  if (minimo === undefined) {
+    return;
+  }
+  void track
+    .applyConstraints({ advanced: [{ zoom: minimo }] } as unknown as MediaTrackConstraints)
+    .catch(() => {
+      // Constraint recusada: fica o zoom que o aparelho escolheu.
+    });
+}
 
 export interface UseCameraResult {
   videoRef: React.RefObject<HTMLVideoElement | null>;
   dica: string;
   /** Mensagem quando a câmera não pôde ser aberta; nesse caso resta o seletor de arquivo. */
   indisponivel: string | null;
-  trocarCamera: () => void;
   capturar: () => Promise<File | null>;
 }
 
@@ -32,7 +49,6 @@ export interface UseCameraResult {
  */
 export function useCamera(ativo: boolean): UseCameraResult {
   const videoRef = useRef<HTMLVideoElement>(null);
-  const [facing, setFacing] = useState<CameraFacing>("environment");
   const [dica, setDica] = useState(DICA_PADRAO);
   const [indisponivel, setIndisponivel] = useState<string | null>(null);
 
@@ -57,7 +73,7 @@ export function useCamera(ativo: boolean): UseCameraResult {
     navigator.mediaDevices
       .getUserMedia({
         video: {
-          facingMode: { ideal: facing },
+          facingMode: { ideal: "environment" },
           // O painel tem dígitos de poucos pixels: pede a maior resolução disponível.
           width: { ideal: 1920 },
           height: { ideal: 1080 },
@@ -70,6 +86,7 @@ export function useCamera(ativo: boolean): UseCameraResult {
           obtido.getTracks().forEach((track) => track.stop());
           return;
         }
+        obtido.getVideoTracks().forEach(zerarZoom);
         if (video) {
           video.srcObject = obtido;
         }
@@ -87,11 +104,7 @@ export function useCamera(ativo: boolean): UseCameraResult {
         video.srcObject = null;
       }
     };
-  }, [ativo, facing]);
-
-  const trocarCamera = useCallback(() => {
-    setFacing((atual) => (atual === "environment" ? "user" : "environment"));
-  }, []);
+  }, [ativo]);
 
   const capturar = useCallback(async (): Promise<File | null> => {
     const video = videoRef.current;
@@ -115,5 +128,5 @@ export function useCamera(ativo: boolean): UseCameraResult {
     return new File([blob], "mahu.jpg", { type: "image/jpeg" });
   }, []);
 
-  return { videoRef, dica, indisponivel, trocarCamera, capturar };
+  return { videoRef, dica, indisponivel, capturar };
 }

@@ -5,6 +5,7 @@ import { MahuReviewForm } from "@/components/MahuReviewForm";
 import { ActionButton } from "@/components/ui/ActionButton";
 import { Panel } from "@/components/ui/Panel";
 import { ProgressBar } from "@/components/ui/ProgressBar";
+import { travarOrientacao } from "@/lib/orientacao";
 import { useMahuStore } from "@/store/useMahuStore";
 
 export function MahuPanel() {
@@ -23,6 +24,23 @@ export function MahuPanel() {
 
   const escolherArquivo = useCallback(() => arquivoRef.current?.click(), []);
 
+  /**
+   * A tela do MAHU é 2,5:1: deitado, o painel preenche o quadro e os dígitos chegam ao OCR
+   * com o dobro da resolução linear. A trava é pedida antes de montar o modal para o vídeo
+   * já iniciar no tamanho final — abrir e girar depois faz o `getUserMedia` negociar a
+   * resolução na orientação errada.
+   */
+  const abrirCamera = useCallback(async () => {
+    await travarOrientacao("landscape");
+    setCameraAberta(true);
+  }, []);
+
+  /** Fecha o modal e prende o app em retrato: só o botão de captura volta a deitar a tela. */
+  const fecharCamera = useCallback(() => {
+    setCameraAberta(false);
+    void travarOrientacao("portrait");
+  }, []);
+
   const handleArquivo = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     // Limpa antes de processar para permitir reenviar o mesmo arquivo.
@@ -33,7 +51,7 @@ export function MahuPanel() {
   };
 
   const handleCaptura = (file: File) => {
-    setCameraAberta(false);
+    fecharCamera();
     void lerImagem(file);
   };
 
@@ -41,16 +59,16 @@ export function MahuPanel() {
   // câmera nativa no celular.
   const handleIndisponivel = useCallback(
     (mensagem: string) => {
-      setCameraAberta(false);
+      fecharCamera();
       setStatus(mensagem);
       escolherArquivo();
     },
-    [escolherArquivo, setStatus],
+    [escolherArquivo, fecharCamera, setStatus],
   );
 
   return (
     <Panel title="Leitura MAHU">
-      <ActionButton className="w-full" disabled={lendo} onClick={() => setCameraAberta(true)}>
+      <ActionButton className="w-full" disabled={lendo} onClick={() => void abrirCamera()}>
         {lendo ? "Lendo..." : "Capturar monitor MAHU"}
       </ActionButton>
 
@@ -90,11 +108,7 @@ export function MahuPanel() {
       {cameraAberta && (
         <CameraModal
           onCapturar={handleCaptura}
-          onFechar={() => setCameraAberta(false)}
-          onEscolherArquivo={() => {
-            setCameraAberta(false);
-            escolherArquivo();
-          }}
+          onFechar={fecharCamera}
           onIndisponivel={handleIndisponivel}
         />
       )}

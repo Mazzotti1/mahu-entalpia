@@ -97,16 +97,15 @@ backend/
 │   ├── mahu_ocr.py            # Alinhamento, recorte das ROIs e OCR
 │   ├── telemetria_ocr.py      # Sugerido vs aplicado, e a foto
 │   └── eventos.py             # Difusor em memória que alimenta o SSE
-├── tests/                     # pytest (pip install -r requirements-dev.txt)
 ├── assets/
 │   └── mahu_template.png      # Gabarito canônico do painel (1200x480)
 └── Dockerfile
 
-docs/fotosMahu/                # Conjunto de teste do OCR + ground_truth.json
+docs/fotosMahu/                # Fotos de referência do OCR + ground_truth.json
 ```
 
 Os três módulos `mahu_campos` <- `mahu_parse` <- `mahu_ocr` são separados de propósito:
-os dois primeiros não dependem de OpenCV nem do easyocr, e é o que permite rodar a suíte
+os dois primeiros não dependem de OpenCV nem do easyocr, e é o que permite importá-los
 sem instalar o ambiente completo (~2 GB por causa do torch).
 
 ```
