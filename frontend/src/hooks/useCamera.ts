@@ -2,7 +2,17 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { describeError } from "@/lib/http";
 
-const DICA_PADRAO = "Encaixe a tela do MAHU dentro da moldura e mantenha o enquadramento estável.";
+/**
+ * A tela do MAHU é bem apaisada: o gabarito do backend é 1200x480, ou seja 2,5:1
+ * (`services/mahu_ocr.py`). Com o celular em pé ela ocupa uma faixa fina no meio do
+ * quadro e os dígitos — que já têm ~10 px no espaço canônico — chegam ao OCR com metade
+ * da resolução linear. Deitar o aparelho é a alavanca mais barata de precisão que existe
+ * neste fluxo, por isso é a primeira coisa que a dica diz.
+ */
+const DICA_PADRAO =
+  "Segure o celular deitado (na horizontal): a tela do MAHU é larga, e só assim ela " +
+  "preenche o quadro e os números saem grandes.\n" +
+  "Encaixe a tela inteira na moldura, aproxime até preencher e evite reflexo no vidro.";
 
 type CameraFacing = "environment" | "user";
 

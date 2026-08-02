@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import asdict
 from typing import AsyncIterator
 
 from fastapi import APIRouter, File, Header, HTTPException, Query, UploadFile
@@ -9,6 +10,7 @@ from fastapi.responses import StreamingResponse
 
 from backend.database import get_db
 from backend.models import (
+    MahuAviso,
     MahuCamposInput,
     MahuLeituraResponse,
     PontoInput,
@@ -20,8 +22,14 @@ from backend.models import (
 )
 from backend.services.eventos import difusor
 from backend.services.mahu import construir_simulacao
-from backend.services.mahu_ocr import ler_mahu
+from backend.services.mahu_campos import CAMPOS_OBRIGATORIOS
+from backend.services.mahu_validacao import validar_leitura
 from backend.services.psicrometria import calcular_ponto
+from backend.services.telemetria_ocr import (
+    registrar_aplicacao,
+    registrar_leitura,
+    ultima_leitura_aplicada,
+)
 
 router = APIRouter(prefix="/api", tags=["psicrometria"])
 
@@ -53,10 +61,15 @@ async def calcular_ponto_endpoint(ponto: PontoInput) -> PontoResponse:
 
 @router.post("/simulacao", response_model=SimulacaoResponse)
 async def criar_simulacao(simulacao: SimulacaoInput) -> SimulacaoResponse:
-    return await _persistir_simulacao(simulacao)
+    return await persistir_simulacao(simulacao)
 
 
-async def _persistir_simulacao(simulacao: SimulacaoInput) -> SimulacaoResponse:
+async def persistir_simulacao(
+    simulacao: SimulacaoInput,
+    *,
+    origem: str = "manual",
+    leitura_id: int | None = None,
+) -> SimulacaoResponse:
     pontos_response: list[PontoResponse] = []
 
     try:
@@ -74,8 +87,8 @@ async def _persistir_simulacao(simulacao: SimulacaoInput) -> SimulacaoResponse:
 
     async with get_db() as db:
         cursor = await db.execute(
-            "INSERT INTO simulacoes (nome, descricao) VALUES (?, ?)",
-            (simulacao.nome, simulacao.descricao),
+            "INSERT INTO simulacoes (nome, descricao, origem, leitura_id) VALUES (?, ?, ?, ?)",
+            (simulacao.nome, simulacao.descricao, origem, leitura_id),
         )
         simulacao_id = cursor.lastrowid
         for ordem, (ponto_input, ponto_calc) in enumerate(zip(simulacao.pontos, pontos_response), start=1):
@@ -330,6 +343,12 @@ async def ler_mahu_endpoint(image: UploadFile = File(...)) -> MahuLeituraRespons
         )
 
     try:
+        # Import tardio, como o do easyocr em mahu_ocr.py e pelo mesmo motivo: o módulo
+        # carrega OpenCV. No topo do arquivo, uma instalação sem cv2 derrubaria a API
+        # inteira no import — e o 503 abaixo, que existe justamente para esse caso, nunca
+        # chegaria a rodar.
+        from backend.services.mahu_ocr import ler_mahu
+
         # O OCR é síncrono e gasta segundos de CPU: rodando direto aqui ele travaria o
         # event loop e a API pararia de responder durante a leitura.
         leitura = await run_in_threadpool(ler_mahu, image_bytes)
@@ -341,7 +360,27 @@ async def ler_mahu_endpoint(image: UploadFile = File(...)) -> MahuLeituraRespons
             detail="Motor de OCR indisponível. Instale as dependências de backend/requirements.txt.",
         ) from exc
 
-    return MahuLeituraResponse(**leitura)
+    campos = leitura["campos"]
+    avisos = validar_leitura(leitura["valores"], anterior=await ultima_leitura_aplicada())
+
+    # Confiança por campo não é suficiente: a leitura que corrompeu quatro campos de uma vez
+    # em produção passou com todos eles marcados "ok". Um aviso cruzado manda para
+    # conferência mesmo quando cada campo, isolado, parecia bom.
+    requires_review = (
+        any(campo.obrigatorio and campo.status != "ok" for campo in campos) or bool(avisos)
+    )
+
+    leitura_id = await registrar_leitura(
+        campos, requires_review=requires_review, avisos=avisos, image_bytes=image_bytes
+    )
+
+    return MahuLeituraResponse(
+        id=leitura_id,
+        campos=campos,
+        missing_keys=leitura["missing_keys"],
+        requires_review=requires_review,
+        avisos=[MahuAviso(**asdict(aviso)) for aviso in avisos],
+    )
 
 
 @router.post("/mahu/simulacao", response_model=SimulacaoResponse)
@@ -350,5 +389,15 @@ async def criar_simulacao_mahu(campos: MahuCamposInput) -> SimulacaoResponse:
 
     Existe para que o frontend possa corrigir uma leitura de OCR sem ter de reproduzir o
     mapeamento campo -> ponto: quem traduz MAHU em P1..P4 continua sendo o backend.
+
+    Com `leitura_id`, o que foi aplicado é confrontado com o que tinha sido sugerido — é
+    daí que sai o rótulo de erro de OCR que o avaliador consome.
     """
-    return await _persistir_simulacao(construir_simulacao(campos))
+    origem = "manual"
+    if campos.leitura_id is not None:
+        aplicados = {key: getattr(campos, key) for key in CAMPOS_OBRIGATORIOS}
+        origem = await registrar_aplicacao(campos.leitura_id, aplicados)
+
+    return await persistir_simulacao(
+        construir_simulacao(campos), origem=origem, leitura_id=campos.leitura_id
+    )

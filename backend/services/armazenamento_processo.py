@@ -1,0 +1,289 @@
+"""Leitura e gravação do processo e dos setpoints.
+
+Os setpoints são uma linha só, compartilhada: a planta tem uma configuração, e quem abrir
+o app do celular precisa ver a mesma que está valendo. Já os setpoints *usados* em cada
+processo são copiados junto com ele — sem essa cópia, mudar a configuração reescreveria o
+significado de todo o histórico.
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import asdict
+
+from backend.database import get_db
+from backend.models import (
+    EtapaResponse,
+    PontoProcessoResponse,
+    ProcessoAviso,
+    ProcessoResponse,
+    SetpointsInput,
+    TotaisProcessoResponse,
+)
+from backend.services.energia import BalancoTermico
+from backend.services.processo import Processo, Setpoints
+from backend.services.psicrometria import Estado
+
+_CAMPOS_SETPOINTS = ("w_saida", "tbs_final", "entalpia_alvo", "vazao_m3h", "pressao_atm")
+
+
+def para_dominio(setpoints: SetpointsInput) -> Setpoints:
+    return Setpoints(**setpoints.model_dump())
+
+
+def ponto_para_response(label: str, estado: Estado) -> PontoProcessoResponse:
+    return PontoProcessoResponse(
+        label=label,
+        tbs=round(estado.tbs, 2),
+        w=round(estado.w, 3),
+        ur=round(estado.ur, 2),
+        entalpia=round(estado.entalpia, 2),
+        tbu=round(estado.tbu, 2),
+        volume_especifico=round(estado.volume_especifico, 4),
+        ponto_orvalho=round(estado.ponto_orvalho, 2),
+        saturado=estado.saturado,
+    )
+
+
+def montar_response(
+    processo: Processo,
+    balanco: BalancoTermico,
+    *,
+    processo_id: int | None = None,
+    simulacao_id: int | None = None,
+) -> ProcessoResponse:
+    etapas = [
+        EtapaResponse(
+            tipo=carga.tipo,
+            de=carga.etapa.de,
+            para=carga.etapa.para,
+            ativa=carga.etapa.ativa,
+            delta_h=round(carga.etapa.delta_h, 3),
+            delta_w=round(carga.etapa.delta_w, 3),
+            q_kw=round(carga.q_kw, 2),
+            q_sensivel_kw=round(carga.q_sensivel_kw, 2),
+            q_latente_kw=round(carga.q_latente_kw, 2),
+            agua_kg_h=round(carga.agua_kg_h, 2),
+            condensado_kg_h=round(carga.condensado_kg_h, 2),
+            joelho=(
+                ponto_para_response("joelho", carga.etapa.joelho)
+                if carga.etapa.joelho is not None
+                else None
+            ),
+        )
+        for carga in balanco.cargas
+    ]
+
+    return ProcessoResponse(
+        id=processo_id,
+        simulacao_id=simulacao_id,
+        setpoints=SetpointsInput(**asdict(processo.setpoints)),
+        pontos=[
+            ponto_para_response(label, processo.pontos[label]) for label in processo.ordem
+        ],
+        etapas=etapas,
+        totais=TotaisProcessoResponse(
+            vazao_massica_kg_s=round(balanco.vazao_massica_kg_s, 4),
+            q_aquecimento_kw=round(balanco.q_aquecimento_kw, 2),
+            q_refrigeracao_kw=round(balanco.q_refrigeracao_kw, 2),
+            agua_umidificacao_kg_h=round(balanco.agua_umidificacao_kg_h, 2),
+            condensado_kg_h=round(balanco.condensado_kg_h, 2),
+        ),
+        avisos=[ProcessoAviso(codigo=a.codigo, mensagem=a.mensagem) for a in processo.avisos],
+    )
+
+
+async def ler_setpoints() -> SetpointsInput:
+    async with get_db() as db:
+        cursor = await db.execute(
+            f"SELECT {', '.join(_CAMPOS_SETPOINTS)} FROM setpoints WHERE id = 1"
+        )
+        linha = await cursor.fetchone()
+    # A migração 3 semeia a linha; ausente, os defaults do modelo valem.
+    return SetpointsInput() if linha is None else SetpointsInput(**dict(linha))
+
+
+async def gravar_setpoints(setpoints: SetpointsInput) -> SetpointsInput:
+    async with get_db() as db:
+        await db.execute(
+            """
+            INSERT INTO setpoints (id, w_saida, tbs_final, entalpia_alvo, vazao_m3h, pressao_atm)
+            VALUES (1, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                w_saida = excluded.w_saida,
+                tbs_final = excluded.tbs_final,
+                entalpia_alvo = excluded.entalpia_alvo,
+                vazao_m3h = excluded.vazao_m3h,
+                pressao_atm = excluded.pressao_atm,
+                atualizado_em = CURRENT_TIMESTAMP
+            """,
+            tuple(getattr(setpoints, campo) for campo in _CAMPOS_SETPOINTS),
+        )
+        await db.commit()
+    return setpoints
+
+
+_CAMPOS_TOTAIS = (
+    "vazao_massica_kg_s",
+    "q_aquecimento_kw",
+    "q_refrigeracao_kw",
+    "agua_umidificacao_kg_h",
+    "condensado_kg_h",
+)
+
+
+async def ler_processo_por_simulacao(simulacao_id: int) -> ProcessoResponse | None:
+    """Reconstrói um processo gravado, para o histórico não perder as etapas e o kW.
+
+    Os pontos vêm de `pontos_psicrometricos` (onde o histórico já os lê) e as etapas de
+    `etapas_processo`. Recalcular a partir da entrada daria outro resultado assim que os
+    setpoints mudassem — por isso a leitura é do que foi gravado, não uma nova resolução.
+    """
+    async with get_db() as db:
+        cursor = await db.execute(
+            f"""
+            SELECT id, {", ".join(_CAMPOS_SETPOINTS)}, {", ".join(_CAMPOS_TOTAIS)}, avisos
+            FROM processos WHERE simulacao_id = ? ORDER BY id DESC LIMIT 1
+            """,
+            (simulacao_id,),
+        )
+        cabecalho = await cursor.fetchone()
+        if cabecalho is None:
+            return None
+
+        cursor = await db.execute(
+            """
+            SELECT p.label, p.tbs, p.w_calculado, p.ur_calculado, p.h_calculado,
+                   p.tbu_calculado, p.volume_especifico, p.ponto_orvalho
+            FROM pontos_psicrometricos p
+            JOIN simulacao_pontos sp ON sp.ponto_id = p.id
+            WHERE sp.simulacao_id = ?
+            ORDER BY sp.ordem
+            """,
+            (simulacao_id,),
+        )
+        pontos = await cursor.fetchall()
+
+        cursor = await db.execute(
+            "SELECT * FROM etapas_processo WHERE processo_id = ? ORDER BY ordem",
+            (cabecalho["id"],),
+        )
+        etapas = await cursor.fetchall()
+
+    return ProcessoResponse(
+        id=cabecalho["id"],
+        simulacao_id=simulacao_id,
+        setpoints=SetpointsInput(**{campo: cabecalho[campo] for campo in _CAMPOS_SETPOINTS}),
+        pontos=[
+            PontoProcessoResponse(
+                label=linha["label"],
+                tbs=linha["tbs"],
+                w=linha["w_calculado"],
+                ur=linha["ur_calculado"],
+                entalpia=linha["h_calculado"],
+                tbu=linha["tbu_calculado"],
+                volume_especifico=linha["volume_especifico"],
+                ponto_orvalho=linha["ponto_orvalho"],
+                # Saturado é o que está em cima da curva; a folga cobre o arredondamento
+                # de duas casas com que os valores foram gravados.
+                saturado=linha["ur_calculado"] >= 99.5,
+            )
+            for linha in pontos
+        ],
+        etapas=[
+            EtapaResponse(
+                tipo=linha["tipo"],
+                de=linha["de"],
+                para=linha["para"],
+                ativa=linha["tipo"] != "nula",
+                delta_h=round(linha["delta_h"], 3),
+                delta_w=round(linha["delta_w"], 3),
+                q_kw=round(linha["q_kw"], 2),
+                q_sensivel_kw=round(linha["q_sensivel_kw"], 2),
+                q_latente_kw=round(linha["q_latente_kw"], 2),
+                agua_kg_h=round(linha["agua_kg_h"], 2),
+                condensado_kg_h=round(linha["condensado_kg_h"], 2),
+                joelho=(
+                    ponto_para_response(
+                        "joelho",
+                        Estado(
+                            tbs=linha["joelho_tbs"],
+                            w=linha["joelho_w"],
+                            pressao_atm=cabecalho["pressao_atm"],
+                        ),
+                    )
+                    if linha["joelho_tbs"] is not None
+                    else None
+                ),
+            )
+            for linha in etapas
+        ],
+        totais=TotaisProcessoResponse(
+            **{campo: round(cabecalho[campo], 4) for campo in _CAMPOS_TOTAIS}
+        ),
+        avisos=[ProcessoAviso(**a) for a in json.loads(cabecalho["avisos"] or "[]")],
+    )
+
+
+async def gravar_processo(
+    simulacao_id: int, processo: Processo, balanco: BalancoTermico
+) -> int:
+    """Grava o processo e suas etapas, e devolve o id."""
+    setpoints = processo.setpoints
+    async with get_db() as db:
+        cursor = await db.execute(
+            """
+            INSERT INTO processos (
+                simulacao_id, w_saida, tbs_final, entalpia_alvo, vazao_m3h, pressao_atm,
+                vazao_massica_kg_s, q_aquecimento_kw, q_refrigeracao_kw,
+                agua_umidificacao_kg_h, condensado_kg_h, avisos
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                simulacao_id,
+                setpoints.w_saida,
+                setpoints.tbs_final,
+                setpoints.entalpia_alvo,
+                setpoints.vazao_m3h,
+                setpoints.pressao_atm,
+                balanco.vazao_massica_kg_s,
+                balanco.q_aquecimento_kw,
+                balanco.q_refrigeracao_kw,
+                balanco.agua_umidificacao_kg_h,
+                balanco.condensado_kg_h,
+                json.dumps([asdict(a) for a in processo.avisos], ensure_ascii=False),
+            ),
+        )
+        processo_id = cursor.lastrowid
+
+        await db.executemany(
+            """
+            INSERT INTO etapas_processo (
+                processo_id, ordem, tipo, de, para, delta_h, delta_w,
+                q_kw, q_sensivel_kw, q_latente_kw, agua_kg_h, condensado_kg_h,
+                joelho_tbs, joelho_w
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    processo_id,
+                    ordem,
+                    carga.tipo,
+                    carga.etapa.de,
+                    carga.etapa.para,
+                    carga.etapa.delta_h,
+                    carga.etapa.delta_w,
+                    carga.q_kw,
+                    carga.q_sensivel_kw,
+                    carga.q_latente_kw,
+                    carga.agua_kg_h,
+                    carga.condensado_kg_h,
+                    carga.etapa.joelho.tbs if carga.etapa.joelho else None,
+                    carga.etapa.joelho.w if carga.etapa.joelho else None,
+                )
+                for ordem, carga in enumerate(balanco.cargas, start=1)
+            ],
+        )
+        await db.commit()
+
+    return processo_id

@@ -24,10 +24,11 @@ import time
 
 sys.path.insert(0, "/app")
 
-from backend.services.mahu import CAMPOS  # noqa: E402
+from backend.services.mahu_campos import CAMPOS_OBRIGATORIOS  # noqa: E402
 from backend.services.mahu_ocr import ler_mahu  # noqa: E402
+from backend.services.mahu_validacao import validar_leitura  # noqa: E402
 
-OBRIGATORIOS = [key for key, _, _, _, obrigatorio in CAMPOS if obrigatorio]
+OBRIGATORIOS = CAMPOS_OBRIGATORIOS
 
 
 def main(diretorio: str) -> int:
@@ -45,6 +46,9 @@ def main(diretorio: str) -> int:
 
     acertos = total = 0
     silenciosos: list[str] = []
+    # Acerto por campo: a média global esconde o campo que sempre erra, e é justamente ele
+    # que precisa de ROI nova ou de outra variante de pré-processamento.
+    por_campo: dict[str, list[int]] = {key: [] for key in OBRIGATORIOS}
 
     for nome in sorted(ground_truth):
         caminho = os.path.join(diretorio, nome)
@@ -57,29 +61,48 @@ def main(diretorio: str) -> int:
             resultado = ler_mahu(imagem.read())
             duracao = time.perf_counter() - inicio
 
-        lidos = {campo["key"]: (campo["pv"], campo["status"]) for campo in resultado["campos"]}
-        linha = f"{nome:<10}{duracao:<7.2f}{str(resultado['requires_review']):<9}"
+        campos = {campo.key: campo for campo in resultado["campos"]}
+        avisos = validar_leitura(resultado["valores"])
+        review = any(
+            campo.obrigatorio and campo.status != "ok" for campo in resultado["campos"]
+        ) or bool(avisos)
+
+        linha = f"{nome:<10}{duracao:<7.2f}{str(review):<9}"
         esperados = f"{'':<10}{'':<7}{'esperado':<9}"
 
         for key in OBRIGATORIOS:
-            lido, status = lidos[key]
+            campo = campos[key]
             esperado = ground_truth[nome].get(key)
-            certo = lido == esperado
+            certo = campo.pv == esperado
             if esperado is not None:
                 total += 1
                 acertos += certo
-            if not certo and status == "ok":
-                silenciosos.append(f"{nome}/{key}: leu {lido}, esperado {esperado}")
-            linha += f"{str(lido) + ('.' if certo else 'X'):>13}"
+                por_campo[key].append(int(certo))
+            if not certo and campo.status == "ok":
+                silenciosos.append(f"{nome}/{key}: leu {campo.pv}, esperado {esperado}")
+            linha += f"{str(campo.pv) + ('.' if certo else 'X'):>13}"
             esperados += f"{str(esperado):>13}"
 
         print(linha)
         print(esperados)
+        for aviso in avisos:
+            print(f"{'':<26}aviso: {aviso.mensagem}")
         print("-" * 104)
 
     pct = 100.0 * acertos / total if total else 0.0
     print(f"ACERTOS: {acertos}/{total} ({pct:.0f}%)")
-    print(f"ERROS SILENCIOSOS (status 'ok' com valor errado): {len(silenciosos)}")
+    print("\nPOR CAMPO:")
+    for key in OBRIGATORIOS:
+        marcas = por_campo[key]
+        if not marcas:
+            print(f"   {key:<22} (sem ground truth)")
+            continue
+        print(
+            f"   {key:<22} {sum(marcas)}/{len(marcas)} "
+            f"({100.0 * sum(marcas) / len(marcas):.0f}%)"
+        )
+
+    print(f"\nERROS SILENCIOSOS (status 'ok' com valor errado): {len(silenciosos)}")
     for erro in silenciosos:
         print(f"   ! {erro}")
     print("=" * 104)

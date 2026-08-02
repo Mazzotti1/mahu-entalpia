@@ -49,6 +49,27 @@ function describeApiError(error: AxiosError<FastApiErrorBody>): string {
   return `Falha na API (${response.status})`;
 }
 
+/**
+ * Erro de API com a mensagem já pronta para a tela. Carrega o `status` porque há resposta
+ * que não é falha: um 404 em "esta simulação tem processo?" é a resposta "não tem", e sem
+ * o código quem chama teria de adivinhar isso pelo texto da mensagem.
+ */
+export class ApiError extends Error {
+  // Campo declarado e atribuído no corpo, e não parâmetro de construtor: o projeto roda
+  // com `erasableSyntaxOnly`, que proíbe a forma abreviada.
+  readonly status: number | null;
+
+  constructor(message: string, status: number | null) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
+
+export function isHttpStatus(error: unknown, status: number): boolean {
+  return error instanceof ApiError && error.status === status;
+}
+
 export const http = axios.create({
   baseURL: resolveBaseUrl(),
   timeout: DEFAULT_TIMEOUT_MS,
@@ -59,7 +80,9 @@ http.interceptors.response.use(
   (response) => response,
   (error: unknown) => {
     if (axios.isAxiosError<FastApiErrorBody>(error)) {
-      return Promise.reject(new Error(describeApiError(error)));
+      return Promise.reject(
+        new ApiError(describeApiError(error), error.response?.status ?? null),
+      );
     }
     return Promise.reject(error instanceof Error ? error : new Error(String(error)));
   },

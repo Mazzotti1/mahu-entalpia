@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import os
-import re
 from functools import lru_cache
 
 import cv2
 import numpy as np
-from pydantic import ValidationError
 
-from backend.models import MahuCampoOCR, MahuCamposInput
-from backend.services.mahu import CAMPOS, CAMPOS_OBRIGATORIOS, construir_simulacao
+from backend.models import MahuCampoOCR
+from backend.services.mahu_campos import CAMPOS, Campo
+from backend.services.mahu_parse import (
+    descrever_faixa_esperada,
+    fora_da_faixa_esperada,
+    parse_valor,
+)
 
 # Espaço canônico em que as ROIs foram medidas (proporção 2,5:1 da tela do MAHU).
 CANON_WIDTH = 1200
@@ -62,9 +65,6 @@ ROIS = {
     "tt04_entalpia_pv": (360, 59, 387, 72),
 }
 
-# O monitor MAHU sempre mostra duas casas decimais, o que permite recuperar a vírgula
-# quando o OCR a perde ("1220" -> 12,20).
-CASAS_DECIMAIS = 2
 OCR_ALLOWLIST = "0123456789,.-"
 # Concordância e confiança mínimas entre as variantes para a leitura valer como "ok".
 MIN_VARIANTES_CONCORDANDO = 2
@@ -72,48 +72,42 @@ MIN_CONFIANCA = 0.5
 
 
 def ler_mahu(image_bytes: bytes) -> dict:
+    """Imagem -> campos lidos. Só o que depende da foto.
+
+    A coerência entre campos (services/mahu_validacao.py), a telemetria e a montagem da
+    simulação ficam com o chamador: nada disso precisa de OpenCV, e misturar aqui obrigaria
+    o ambiente completo para testar qualquer uma das três.
+    """
     canonico = _rectify(_decode_image(image_bytes))
 
     campos: list[MahuCampoOCR] = []
     valores: dict[str, float] = {}
 
-    for key, label, unidade, faixa, obrigatorio in CAMPOS:
-        roi = ROIS[key]
-        texto, valor, confianca, status = _read_field(_crop(canonico, roi), faixa)
+    for campo in CAMPOS:
+        roi = ROIS[campo.key]
+        texto, valor, confianca, status, motivo = _read_field(_crop(canonico, roi), campo)
         if valor is not None:
-            valores[key] = valor
+            valores[campo.key] = valor
         campos.append(
             MahuCampoOCR(
-                key=key,
-                label=label,
-                unidade=unidade,
-                obrigatorio=obrigatorio,
+                key=campo.key,
+                label=campo.label,
+                unidade=campo.unidade,
+                obrigatorio=campo.obrigatorio,
                 raw_text=texto,
                 pv=valor,
                 confidence=confianca,
                 roi=list(roi),
                 status=status,
+                motivo=motivo,
             )
         )
 
-    missing_keys = [campo.key for campo in campos if campo.obrigatorio and campo.pv is None]
-    requires_review = any(campo.obrigatorio and campo.status != "ok" for campo in campos)
-
-    suggested_simulacao = None
-    if not missing_keys:
-        try:
-            entrada = MahuCamposInput(**{key: valores[key] for key in CAMPOS_OBRIGATORIOS})
-        except ValidationError:
-            missing_keys = list(CAMPOS_OBRIGATORIOS)
-            requires_review = True
-        else:
-            suggested_simulacao = construir_simulacao(entrada).model_dump()
-
     return {
-        "campos": [campo.model_dump() for campo in campos],
-        "missing_keys": missing_keys,
-        "requires_review": requires_review,
-        "suggested_simulacao": suggested_simulacao,
+        "campos": campos,
+        "missing_keys": [campo.key for campo in campos if campo.obrigatorio and campo.pv is None],
+        # Só os campos que o OCR conseguiu ler, para a validação cruzada e a montagem.
+        "valores": valores,
     }
 
 
@@ -313,88 +307,54 @@ def _variants(crop: np.ndarray) -> list[np.ndarray]:
 
 
 def _read_field(
-    crop: np.ndarray, faixa: tuple[float, float]
-) -> tuple[str | None, float | None, float | None, str]:
+    crop: np.ndarray, campo: Campo
+) -> tuple[str | None, float | None, float | None, str, str | None]:
     if crop.size == 0:
-        return None, None, None, "unreadable"
+        return None, None, None, "unreadable", "recorte vazio"
 
     engine = _get_ocr_engine()
     confiancas: dict[float, list[float]] = {}
     textos: dict[float, str] = {}
-    # Quantas variantes leram o valor com a vírgula visível, sem precisar reconstruí-la.
-    explicitos: dict[float, int] = {}
 
     for variante in _variants(crop):
         for _, texto, confianca in engine.readtext(
             variante, detail=1, paragraph=False, allowlist=OCR_ALLOWLIST
         ):
-            valor, inferido = _parse_value(str(texto), faixa)
+            valor, inferido = parse_valor(str(texto), campo)
             if valor is None:
                 continue
             confiancas.setdefault(valor, []).append(float(confianca))
             if inferido:
                 textos.setdefault(valor, str(texto).strip())
             else:
-                explicitos[valor] = explicitos.get(valor, 0) + 1
                 # Leitura com separador descreve melhor o campo: sobrepõe a inferida.
                 textos[valor] = str(texto).strip()
 
     if not confiancas:
-        return None, None, None, "unreadable"
+        return None, None, None, "unreadable", "nada legível no recorte"
 
     # Vence o valor com mais variantes concordando; empate desempata pela confiança somada.
-    # Ter enxergado a vírgula não entra aqui de propósito: um "1.0" de confiança 0,21 não
-    # deve ganhar de um "730" de 0,59 só por trazer separador. Isso pesa no status, abaixo.
     valor = max(confiancas, key=lambda item: (len(confiancas[item]), sum(confiancas[item])))
     votos = confiancas[valor]
     confianca_media = round(sum(votos) / len(votos), 4)
 
-    # Só é "ok" se alguma variante enxergou a vírgula. Um valor puramente reconstruído é
-    # ambíguo por natureza — "220" vira 2,20 e "2120" vira 21,20, ambos plausíveis para
-    # uma temperatura — então vai para conferência manual em vez de entrar no cálculo.
-    confiavel = (
-        len(votos) >= MIN_VARIANTES_CONCORDANDO
-        and confianca_media >= MIN_CONFIANCA
-        and explicitos.get(valor, 0) >= 1
-    )
-    status = "ok" if confiavel else "low_confidence"
-    return textos[valor], valor, confianca_media, status
+    # A faixa de operação é o que decide se a leitura entra no cálculo. Antes esse papel
+    # era de um gate que exigia ter enxergado a vírgula, porque um valor reconstruído era
+    # ambíguo ("220" viraria 2,20 e "2120" viraria 21,20, ambos plausíveis para uma
+    # temperatura). Com as casas decimais definidas por campo a reconstrução deixou de ser
+    # ambígua, e com a faixa esperada o 2,20 é rejeitado por si só — manter o gate só
+    # mandava leitura boa para conferência à toa.
+    if len(votos) < MIN_VARIANTES_CONCORDANDO:
+        motivo = "apenas uma variante da imagem leu este valor"
+    elif confianca_media < MIN_CONFIANCA:
+        motivo = f"confiança baixa ({confianca_media:.2f})"
+    elif fora_da_faixa_esperada(valor, campo):
+        motivo = f"fora da faixa de operação ({descrever_faixa_esperada(campo)})"
+    else:
+        motivo = None
 
-
-def _parse_value(texto: str, faixa: tuple[float, float]) -> tuple[float | None, bool]:
-    """Converte o texto do OCR em número, ou (None, False) se não for plausível.
-
-    Devolve também se a vírgula foi inferida, porque uma leitura reconstruída merece
-    menos confiança que uma em que o OCR viu o separador.
-    """
-    minimo, maximo = faixa
-    limpo = re.sub(r"[^0-9,.\-]", "", texto).replace(",", ".")
-    # O OCR às vezes devolve mais de um separador ("1.2.20"): vale o último.
-    if limpo.count(".") > 1:
-        cabeca, _, cauda = limpo.rpartition(".")
-        limpo = cabeca.replace(".", "") + "." + cauda
-
-    match = re.search(r"-?\d+(?:\.\d+)?", limpo)
-    if not match:
-        return None, False
-
-    bruto = match.group(0)
-    digitos = re.sub(r"\D", "", bruto)
-    tem_separador = "." in bruto
-
-    # O painel mostra sempre 2 decimais. Uma leitura curta demais perdeu caracteres e
-    # não dá para reconstruir: é o que impede um "0" ou "53" solto de virar valor válido.
-    minimo_digitos = 2 if tem_separador else CASAS_DECIMAIS + 1
-    if len(digitos) < minimo_digitos:
-        return None, False
-
-    if tem_separador:
-        valor = float(bruto)
-        return (round(valor, CASAS_DECIMAIS), False) if minimo <= valor <= maximo else (None, False)
-
-    # Sem separador, os dígitos são o valor multiplicado por 100 ("870" -> 8,70).
-    valor = float(bruto) / (10**CASAS_DECIMAIS)
-    return (round(valor, CASAS_DECIMAIS), True) if minimo <= valor <= maximo else (None, False)
+    status = "ok" if motivo is None else "low_confidence"
+    return textos[valor], valor, confianca_media, status, motivo
 
 
 @lru_cache(maxsize=1)

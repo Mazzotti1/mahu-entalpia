@@ -1,27 +1,8 @@
 import { create } from "zustand";
 
 import { DEFAULT_LAYER_VISIBILITY, type LayerKey, type LayerVisibility } from "@/chart/layers";
-import { describeError } from "@/lib/http";
-import { enviarSimulacao } from "@/services/psicrometriaApi";
-import type { SimulacaoInput, SimulacaoResponse } from "@/types/api";
-import type { ProbeState, ProcessPoint } from "@/types/chart";
-
-/**
- * Mesmos valores do monitor em `docs/fotosMahu/6.jpg`, com o mapeamento de
- * `backend/services/mahu.py`: assim a carta inicial e a vinda da câmera coincidem.
- * P2 vem de TT_04 saturado — a entrada do doc §6 (TBS 12,20 + h 36,20) exigiria
- * W = 9,48 g/kg contra W_sat = 8,85 g/kg, ou seja UR de 107%, e é rejeitada pela API.
- */
-const SIMULACAO_PADRAO: SimulacaoInput = {
-  nome: "Simulação Padrão ASHRAE",
-  descricao: "Pontos de processo da carta psicrométrica",
-  pontos: [
-    { label: "P1", tbs: 20.27, ur: 63.89 },
-    { label: "P2", tbs: 12.2, ur: 100.0 },
-    { label: "P3", tbs: 8.7, ur: 100.0 },
-    { label: "P4", tbs: 21.2, ur: 46.48 },
-  ],
-};
+import type { ProcessoResponse, SimulacaoResponse } from "@/types/api";
+import type { ProbeState, ProcessPoint, ProcessSegment } from "@/types/chart";
 
 function toProcessPoint(ponto: SimulacaoResponse["pontos"][number]): ProcessPoint {
   return {
@@ -39,9 +20,33 @@ function toProcessPoint(ponto: SimulacaoResponse["pontos"][number]): ProcessPoin
   };
 }
 
+function paraSegmentos(processo: ProcessoResponse): ProcessSegment[] {
+  const porLabel = new Map(processo.pontos.map((ponto) => [ponto.label, ponto]));
+  return processo.etapas.flatMap((etapa) => {
+    const inicio = porLabel.get(etapa.de);
+    const fim = porLabel.get(etapa.para);
+    // Etapa nula não tem trajetória: os dois pontos coincidem.
+    if (!inicio || !fim || !etapa.ativa) {
+      return [];
+    }
+    return [
+      {
+        tipo: etapa.tipo,
+        de: etapa.de,
+        para: etapa.para,
+        inicio: { tbs: inicio.tbs, wGkg: inicio.w },
+        fim: { tbs: fim.tbs, wGkg: fim.w },
+        joelho: etapa.joelho ? { tbs: etapa.joelho.tbs, wGkg: etapa.joelho.w } : null,
+      },
+    ];
+  });
+}
+
 interface ChartState {
   layers: LayerVisibility;
   points: ProcessPoint[];
+  /** Vazio quando os pontos não vieram de um processo (histórico antigo). */
+  segments: ProcessSegment[];
   probe: ProbeState | null;
   carregando: boolean;
   erro: string | null;
@@ -49,15 +54,15 @@ interface ChartState {
   toggleLayer: (key: LayerKey) => void;
   setProbe: (probe: ProbeState) => void;
   resetProbe: () => void;
+  /** Pontos avulsos, sem trajetórias: histórico anterior à migração 3. */
   aplicarSimulacao: (simulacao: SimulacaoResponse) => void;
-  carregarSimulacao: (payload: SimulacaoInput) => Promise<SimulacaoResponse>;
-  /** Cria a simulação de exemplo. Só faz sentido com o histórico vazio. */
-  semearSimulacaoPadrao: () => Promise<SimulacaoResponse>;
+  aplicarPontosDoProcesso: (processo: ProcessoResponse) => void;
 }
 
 export const useChartStore = create<ChartState>((set, get) => ({
   layers: DEFAULT_LAYER_VISIBILITY,
   points: [],
+  segments: [],
   probe: null,
   carregando: false,
   erro: null,
@@ -81,24 +86,33 @@ export const useChartStore = create<ChartState>((set, get) => ({
     const points = simulacao.pontos.map(toProcessPoint);
     set({
       points,
+      // Uma simulação avulsa não descreve trajetórias: os pontos são ligados por reta.
+      segments: [],
       probe: { tbs: points[0].tbs, wKgKg: points[0].wKgKg },
       erro: null,
     });
   },
 
-  carregarSimulacao: async (payload) => {
-    set({ carregando: true });
-    try {
-      const simulacao = await enviarSimulacao(payload);
-      get().aplicarSimulacao(simulacao);
-      return simulacao;
-    } catch (error) {
-      set({ erro: describeError(error) });
-      throw error;
-    } finally {
-      set({ carregando: false });
-    }
+  aplicarPontosDoProcesso: (processo) => {
+    const points: ProcessPoint[] = processo.pontos.map((ponto) => ({
+      id: null,
+      nome: ponto.label,
+      tbs: ponto.tbs,
+      wKgKg: ponto.w / 1000,
+      ur: ponto.ur,
+      entalpia: ponto.entalpia,
+      tbu: ponto.tbu,
+      volumeEspecifico: ponto.volume_especifico,
+      pontoOrvalho: ponto.ponto_orvalho,
+      fonteCalculo: "w_abs",
+      saturado: ponto.saturado,
+    }));
+    set({
+      points,
+      segments: paraSegmentos(processo),
+      probe: { tbs: points[0].tbs, wKgKg: points[0].wKgKg },
+      erro: null,
+    });
   },
 
-  semearSimulacaoPadrao: () => get().carregarSimulacao(SIMULACAO_PADRAO),
 }));

@@ -8,6 +8,9 @@ const COLUNAS = [
   "UR (%)",
   "h (kJ/kg)",
   "TBU (°C)",
+  // O orvalho sempre veio da API e nunca era exibido. É ele que localiza o joelho das
+  // trajetórias de resfriamento com condensação, então vale a coluna.
+  "Orvalho (°C)",
   "Vol. (m³/kg)",
 ];
 
@@ -15,7 +18,9 @@ export function PropertiesTable() {
   const points = useChartStore((state) => state.points);
 
   return (
-    <section className="mt-4 max-w-[1200px] rounded-[10px] border border-gray-200 bg-white p-3">
+    // Escondida no celular deitado: são 7 colunas por 5 linhas, ilegíveis em ~390px de
+    // altura, e quem girou o aparelho girou para ver a carta. Em pé ela volta.
+    <section className="mt-4 max-w-[1200px] rounded-[10px] border border-gray-200 bg-white p-3 paisagem:hidden">
       <h3 className="mb-2.5 text-lg font-semibold">Tabela de propriedades calculadas</h3>
       <div className="overflow-x-auto">
         <table className="w-full border-collapse text-sm">
@@ -58,6 +63,9 @@ export function PropertiesTable() {
                   </td>
                   <td className="border border-gray-200 p-2 text-center tabular-nums">
                     {formatarNumero(ponto.tbu, 2)}
+                  </td>
+                  <td className="border border-gray-200 p-2 text-center tabular-nums">
+                    {formatarNumero(ponto.pontoOrvalho, 2)}
                   </td>
                   <td className="border border-gray-200 p-2 text-center tabular-nums">
                     {formatarNumero(ponto.volumeEspecifico, 3)}

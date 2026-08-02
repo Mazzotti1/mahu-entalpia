@@ -1,9 +1,12 @@
-import { http } from "@/lib/http";
+import { http, isHttpStatus } from "@/lib/http";
 import type {
   MahuCamposInput,
   MahuLeituraResponse,
   PontoInput,
   PontoResponse,
+  ProcessoInput,
+  ProcessoResponse,
+  Setpoints,
   SimulacaoInput,
   SimulacaoListaResponse,
   SimulacaoResponse,
@@ -62,10 +65,43 @@ export async function lerMahuMonitor(
 }
 
 /**
- * Calcula e persiste a simulação a partir dos campos do MAHU já conferidos. Quem traduz
- * campo do painel em P1..P4 continua sendo o backend (`services/mahu.py`).
+ * Resolve o processo a partir dos campos do MAHU já conferidos.
+ *
+ * Só TT01 e MT_01 alimentam o cálculo — são o ar de entrada. TT_04, TT_06, TT07 e MT07
+ * voltam em `desvios`, comparados ao que os setpoints preveem (decisões B e D).
  */
-export async function criarSimulacaoMahu(campos: MahuCamposInput): Promise<SimulacaoResponse> {
-  const { data } = await http.post<SimulacaoResponse>("/mahu/simulacao", campos);
+export async function calcularProcessoMahu(campos: MahuCamposInput): Promise<ProcessoResponse> {
+  const { data } = await http.post<ProcessoResponse>("/mahu/processo", campos);
+  return data;
+}
+
+export async function calcularProcesso(payload: ProcessoInput): Promise<ProcessoResponse> {
+  const { data } = await http.post<ProcessoResponse>("/processo", payload);
+  return data;
+}
+
+/**
+ * O processo gravado de uma simulação, ou `null` nas anteriores à migração 3 — o histórico
+ * tem entradas antigas que nunca tiveram etapas nem kW, e elas ainda precisam abrir.
+ */
+export async function buscarProcessoDaSimulacao(id: number): Promise<ProcessoResponse | null> {
+  try {
+    const { data } = await http.get<ProcessoResponse>(`/simulacao/${id}/processo`);
+    return data;
+  } catch (error) {
+    if (isHttpStatus(error, 404)) {
+      return null;
+    }
+    throw error;
+  }
+}
+
+export async function buscarSetpoints(): Promise<Setpoints> {
+  const { data } = await http.get<Setpoints>("/setpoints");
+  return data;
+}
+
+export async function salvarSetpoints(setpoints: Setpoints): Promise<Setpoints> {
+  const { data } = await http.put<Setpoints>("/setpoints", setpoints);
   return data;
 }

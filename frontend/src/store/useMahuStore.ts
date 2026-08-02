@@ -1,10 +1,10 @@
 import { create } from "zustand";
 
 import { describeError } from "@/lib/http";
-import { criarSimulacaoMahu, lerMahuMonitor } from "@/services/psicrometriaApi";
-import { useChartStore } from "@/store/useChartStore";
+import { calcularProcessoMahu, lerMahuMonitor } from "@/services/psicrometriaApi";
 import { useHistoricoStore } from "@/store/useHistoricoStore";
-import type { MahuCampoOCR, MahuCamposInput, MahuLeituraResponse } from "@/types/api";
+import { useProcessoStore } from "@/store/useProcessoStore";
+import type { MahuCamposInput, MahuLeituraResponse } from "@/types/api";
 
 const STATUS_INICIAL = "Fotografe o monitor para atualizar os pontos automaticamente.";
 
@@ -18,7 +18,10 @@ const CHAVES_OBRIGATORIAS = [
   "tt07",
 ] as const satisfies readonly (keyof MahuCamposInput)[];
 
-function montarCampos(valores: Record<string, number>): MahuCamposInput | null {
+function montarCampos(
+  valores: Record<string, number>,
+  leituraId: number | null,
+): MahuCamposInput | null {
   if (CHAVES_OBRIGATORIAS.some((chave) => !Number.isFinite(valores[chave]))) {
     return null;
   }
@@ -29,14 +32,22 @@ function montarCampos(valores: Record<string, number>): MahuCamposInput | null {
     tt06: valores.tt06,
     mt07: valores.mt07,
     tt07: valores.tt07,
+    leitura_id: leituraId,
   };
 }
 
-function resumirCampos(campos: MahuCampoOCR[]): string {
-  return campos
-    .filter((campo) => campo.obrigatorio && campo.pv != null)
-    .map((campo) => `${campo.label}: ${campo.pv} ${campo.unidade}`)
-    .join(" | ");
+function descreverLeitura(leitura: MahuLeituraResponse): string {
+  if (leitura.missing_keys.length > 0) {
+    return `Leitura incompleta. Preencha à mão: ${leitura.missing_keys.join(", ")}`;
+  }
+  if (leitura.avisos.length > 0) {
+    // Os campos podem ter saído confiáveis um a um e ainda assim não fechar entre si.
+    return "Os valores lidos não são coerentes entre si. Confira antes de aplicar.";
+  }
+  if (leitura.requires_review) {
+    return "Confira os campos destacados antes de aplicar.";
+  }
+  return "Leitura concluída. Confira os valores e aplique.";
 }
 
 /**
@@ -65,7 +76,7 @@ interface MahuState {
   aplicarConferencia: (valores: Record<string, number>) => Promise<void>;
 }
 
-export const useMahuStore = create<MahuState>((set) => ({
+export const useMahuStore = create<MahuState>((set, get) => ({
   status: STATUS_INICIAL,
   lendo: false,
   aplicando: false,
@@ -110,24 +121,13 @@ export const useMahuStore = create<MahuState>((set) => ({
               : "Enviando a foto do MAHU...",
         });
       });
-      const abrirConferencia = (status: string) =>
-        set({ leitura, leituraId: Date.now(), status });
-
-      if (leitura.missing_keys.length > 0) {
-        abrirConferencia(`Leitura incompleta. Preencha à mão: ${leitura.missing_keys.join(", ")}`);
-        return;
-      }
-      if (leitura.requires_review || !leitura.suggested_simulacao) {
-        abrirConferencia("Leitura concluída com campos duvidosos. Confira os valores e aplique.");
-        return;
-      }
-
-      // Todos os campos obrigatórios saíram confiáveis: aplica direto.
-      const simulacao = await useChartStore
-        .getState()
-        .carregarSimulacao(leitura.suggested_simulacao);
-      useHistoricoStore.getState().registrarLeituraLocal(simulacao.id);
-      set({ status: `Leitura aplicada.\n${resumirCampos(leitura.campos)}` });
+      // A conferência é sempre aberta, inclusive quando todos os campos saíram confiáveis.
+      // Aplicar direto escondia do usuário o que tinha sido lido, e foi assim que uma
+      // leitura com quatro campos corrompidos entrou no banco sem ninguém ver: a confiança
+      // por campo estava boa e nada pediu revisão (docs/especificacao-processo-mahu.md §8.4).
+      // Como efeito colateral, toda leitura passa a produzir o par sugerido/aplicado, que é
+      // o ground truth rotulado de que O5.3 precisa.
+      set({ leitura, leituraId: Date.now(), status: descreverLeitura(leitura) });
     } catch (error) {
       set({ status: `Falha na leitura MAHU: ${describeError(error)}` });
     } finally {
@@ -137,18 +137,27 @@ export const useMahuStore = create<MahuState>((set) => ({
   },
 
   aplicarConferencia: async (valores) => {
-    const campos = montarCampos(valores);
+    const campos = montarCampos(valores, get().leitura?.id ?? null);
     if (!campos) {
       set({ status: "Preencha todos os campos obrigatórios com valores numéricos." });
       return;
     }
 
-    set({ aplicando: true, status: "Calculando pontos a partir dos valores conferidos..." });
+    set({ aplicando: true, status: "Resolvendo o processo a partir dos valores conferidos..." });
     try {
-      const simulacao = await criarSimulacaoMahu(campos);
-      useChartStore.getState().aplicarSimulacao(simulacao);
-      useHistoricoStore.getState().registrarLeituraLocal(simulacao.id);
-      set({ leitura: null, status: "Carta atualizada com a leitura conferida do MAHU." });
+      // TT01 e MT_01 são o ar de entrada; o resto do processo vem dos setpoints, e as
+      // demais medições voltam como desvio (decisões B e D).
+      const processo = await calcularProcessoMahu(campos);
+      useProcessoStore.getState().aplicarProcesso(processo);
+      if (processo.simulacao_id != null) {
+        useHistoricoStore.getState().registrarLeituraLocal(processo.simulacao_id);
+      }
+      set({
+        leitura: null,
+        status:
+          `Processo atualizado. Refrigeração ${processo.totais.q_refrigeracao_kw.toFixed(1)} kW, ` +
+          `aquecimento ${processo.totais.q_aquecimento_kw.toFixed(1)} kW.`,
+      });
     } catch (error) {
       set({ status: `Falha ao aplicar a leitura: ${describeError(error)}` });
     } finally {

@@ -8,6 +8,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from backend.database import init_db
 from backend.routes.pontos import router as pontos_router
+from backend.routes.processo import router as processo_router
+from backend.services.telemetria_ocr import purgar_imagens_antigas
 
 # O frontend é servido pelo nginx (container) ou pelo dev server do Vite, e nos dois casos
 # /api chega por proxy na mesma origem — o CORS abaixo cobre só o acesso direto à API.
@@ -32,6 +34,8 @@ def origens_permitidas() -> list[str]:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     await init_db()
+    # Depois das migrações: a purga consulta a tabela que a migração 2 cria.
+    await purgar_imagens_antigas()
     yield
 
 
@@ -50,6 +54,7 @@ app.add_middleware(
 )
 
 app.include_router(pontos_router)
+app.include_router(processo_router)
 
 
 @app.get("/")

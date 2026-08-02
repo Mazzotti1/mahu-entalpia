@@ -1,7 +1,12 @@
 import { create } from "zustand";
 
 import { describeError, streamUrl } from "@/lib/http";
-import { buscarSimulacao, listarSimulacoes } from "@/services/psicrometriaApi";
+import {
+  buscarProcessoDaSimulacao,
+  buscarSimulacao,
+  listarSimulacoes,
+} from "@/services/psicrometriaApi";
+import { useProcessoStore } from "@/store/useProcessoStore";
 import { useChartStore } from "@/store/useChartStore";
 import type { SimulacaoResumo } from "@/types/api";
 
@@ -66,10 +71,15 @@ export const useHistoricoStore = create<HistoricoState>((set, get) => ({
       return;
     }
     try {
-      const simulacao = await useChartStore.getState().semearSimulacaoPadrao();
-      get().registrarLeituraLocal(simulacao.id);
+      // Semeia um processo, e não uma simulação avulsa: assim a primeira tela já traz
+      // etapas, kW e trajetórias, e não quatro pontos ligados por reta.
+      await useProcessoStore.getState().calcularDeEntrada(20.27, 64.09);
+      const simulacaoId = useProcessoStore.getState().processo?.simulacao_id;
+      if (simulacaoId != null) {
+        get().registrarLeituraLocal(simulacaoId);
+      }
     } catch {
-      // O erro já está em useChartStore.erro; o indicador o exibe.
+      // O erro já está em useProcessoStore.erro; o indicador o exibe.
     }
   },
 
@@ -95,8 +105,15 @@ export const useHistoricoStore = create<HistoricoState>((set, get) => ({
     }
     set({ carregando: true });
     try {
-      const simulacao = await buscarSimulacao(id);
-      useChartStore.getState().aplicarSimulacao(simulacao);
+      // Entrada gravada com o processo traz etapas e kW; as anteriores à migração 3 não
+      // têm processo nenhum e caem no caminho antigo, com os pontos ligados por reta.
+      const processo = await buscarProcessoDaSimulacao(id);
+      if (processo) {
+        useProcessoStore.getState().aplicarProcesso(processo);
+      } else {
+        useProcessoStore.getState().limpar();
+        useChartStore.getState().aplicarSimulacao(await buscarSimulacao(id));
+      }
       // Escolher algo que não é o topo da lista desliga o acompanhamento automático.
       set({ selecionadaId: id, seguindoUltima: get().itens[0]?.id === id, erro: null });
     } catch (error) {

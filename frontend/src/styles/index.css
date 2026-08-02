@@ -6,6 +6,13 @@
   --breakpoint-desk: 1100px;
 }
 
+/* Celular deitado.
+   Não é um breakpoint de largura como o `desk` porque o recurso escasso aqui é a ALTURA:
+   um celular na horizontal tem ~850px de largura (abaixo de `desk`, portanto caía no
+   layout empilhado do portrait, com o painel comendo a tela justamente onde ela é curta) e
+   330-450px de altura. O corte em 560px separa celular deitado de tablet em paisagem. */
+@custom-variant paisagem (@media (orientation: landscape) and (max-height: 560px));
+
 :root {
   color-scheme: light;
 }

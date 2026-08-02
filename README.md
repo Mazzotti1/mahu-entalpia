@@ -85,19 +85,34 @@ A aplicação abre em <http://localhost:5173>. O dev server do Vite faz proxy de
 backend/
 ├── main.py                    # FastAPI + CORS
 ├── database.py                # SQLite (CARTA_DB_PATH define o caminho)
+├── migrations.py              # Schema versionado por PRAGMA user_version
 ├── models.py                  # Schemas Pydantic
-├── schema.sql
 ├── routes/pontos.py           # Endpoints
 ├── services/
 │   ├── psicrometria.py        # Cálculos via psychrolib
 │   ├── mahu.py                # Mapeamento campos do painel -> P1..P4
+│   ├── mahu_campos.py         # Metadados dos campos: casas decimais e faixas
+│   ├── mahu_parse.py          # Texto do OCR -> valor (puro, sem OpenCV)
+│   ├── mahu_validacao.py      # Coerência entre campos da leitura
 │   ├── mahu_ocr.py            # Alinhamento, recorte das ROIs e OCR
+│   ├── telemetria_ocr.py      # Sugerido vs aplicado, e a foto
 │   └── eventos.py             # Difusor em memória que alimenta o SSE
+├── tests/                     # pytest (pip install -r requirements-dev.txt)
 ├── assets/
 │   └── mahu_template.png      # Gabarito canônico do painel (1200x480)
 └── Dockerfile
 
 docs/fotosMahu/                # Conjunto de teste do OCR + ground_truth.json
+```
+
+Os três módulos `mahu_campos` <- `mahu_parse` <- `mahu_ocr` são separados de propósito:
+os dois primeiros não dependem de OpenCV nem do easyocr, e é o que permite rodar a suíte
+sem instalar o ambiente completo (~2 GB por causa do torch).
+
+```
+scripts/
+├── avaliar_ocr.py             # Acerto contra as fotos com ground truth
+└── relatorio_telemetria.py    # Acerto contra as correções feitas em produção
 scripts/avaliar_ocr.py         # Mede a acurácia contra o ground truth
 
 frontend/

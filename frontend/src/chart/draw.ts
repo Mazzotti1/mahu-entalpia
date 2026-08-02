@@ -7,7 +7,7 @@ import {
   wDePressaoVapor,
   wDeVolumeEspecifico,
 } from "@/lib/psicrometria";
-import type { ProbeState, ProcessPoint } from "@/types/chart";
+import type { ProbeState, ProcessPoint, ProcessSegment } from "@/types/chart";
 
 /** Ordem de camadas da §5 do planejamento técnico, do fundo para a frente. */
 const CORES = {
@@ -43,8 +43,27 @@ type Traco = (Ponto | null)[];
 export interface ChartScene {
   layers: LayerVisibility;
   points: ProcessPoint[];
+  /** Vazio quando os pontos não vieram de um processo; aí eles são ligados por reta. */
+  segments: ProcessSegment[];
   probe: ProbeState | null;
 }
+
+/** Cor por tipo de etapa: a carta passa a dizer QUAL equipamento fez cada trecho. */
+const CORES_ETAPA: Record<ProcessSegment["tipo"], string> = {
+  resfriamento_sensivel: "#0ea5e9",
+  resfriamento_desumidificacao: "#2563eb",
+  aquecimento_sensivel: "#ef4444",
+  umidificacao_adiabatica: "#10b981",
+  nula: "#94a3b8",
+};
+
+const ROTULOS_ETAPA: Record<ProcessSegment["tipo"], string> = {
+  resfriamento_sensivel: "Resfriamento sensível",
+  resfriamento_desumidificacao: "Resfriamento + desumidificação",
+  aquecimento_sensivel: "Aquecimento sensível",
+  umidificacao_adiabatica: "Umidificação adiabática",
+  nula: "Etapa pulada",
+};
 
 /** Desenha um quadro inteiro da carta. Chamar isto substitui o conteúdo do canvas. */
 export function renderChart(ctx: CanvasRenderingContext2D, scene: ChartScene): void {
@@ -57,11 +76,135 @@ export function renderChart(ctx: CanvasRenderingContext2D, scene: ChartScene): v
   desenharIsolinhasBulboUmido(ctx, scene.layers);
   desenharIsolinhasPressaoVapor(ctx, scene.layers);
   desenharIsolinhasVolumeEspecifico(ctx, scene.layers);
-  desenharVetorProcesso(ctx, scene.points);
+  if (scene.segments.length > 0) {
+    desenharTrajetorias(ctx, scene.segments);
+    desenharLegendaEtapas(ctx, scene.segments);
+  } else {
+    desenharVetorProcesso(ctx, scene.points);
+  }
   desenharPontosProcesso(ctx, scene.points);
   if (scene.probe) {
     desenharCursor(ctx, scene.probe);
   }
+}
+
+/**
+ * Traça cada etapa pelo caminho que o ar de fato percorre, e não pela reta entre os dois
+ * estados. A diferença não é enfeite: resfriar com condensação sai do ponto a W constante,
+ * dobra no orvalho e desce colado na curva de saturação. A reta cortaria por dentro da
+ * região supersaturada, que é ar que não existe.
+ */
+function desenharTrajetorias(ctx: CanvasRenderingContext2D, segments: ProcessSegment[]): void {
+  ctx.save();
+  ctx.lineWidth = 2.6;
+  ctx.lineJoin = "round";
+  ctx.lineCap = "round";
+
+  for (const segmento of segments) {
+    ctx.strokeStyle = CORES_ETAPA[segmento.tipo];
+    ctx.beginPath();
+    ctx.moveTo(tbsToX(segmento.inicio.tbs), wToY(segmento.inicio.wGkg));
+
+    if (segmento.tipo === "umidificacao_adiabatica") {
+      // Bulbo úmido constante: a linha sobe inclinada para a esquerda até saturar. Amostrar
+      // a isoentálpica aproxima bem o suficiente na escala da carta e evita inverter TBU.
+      tracarPorEntalpia(ctx, segmento);
+    } else if (segmento.joelho) {
+      // Trecho reto a W constante até o orvalho, e daí sobre a saturação.
+      ctx.lineTo(tbsToX(segmento.joelho.tbs), wToY(segmento.joelho.wGkg));
+      tracarSaturacao(ctx, segmento.joelho.tbs, segmento.fim.tbs);
+    } else if (saoAmbosSaturados(segmento)) {
+      tracarSaturacao(ctx, segmento.inicio.tbs, segmento.fim.tbs);
+    } else {
+      // Sensível puro: W não muda, a linha é horizontal.
+      ctx.lineTo(tbsToX(segmento.fim.tbs), wToY(segmento.fim.wGkg));
+    }
+
+    ctx.stroke();
+    desenharSeta(ctx, segmento);
+  }
+  ctx.restore();
+}
+
+function saoAmbosSaturados(segmento: ProcessSegment): boolean {
+  const folga = 0.02;
+  return (
+    segmento.inicio.wGkg >= urParaW(100, segmento.inicio.tbs) * 1000 - folga &&
+    segmento.fim.wGkg >= urParaW(100, segmento.fim.tbs) * 1000 - folga
+  );
+}
+
+/** Segue a curva de saturação entre duas temperaturas, em qualquer sentido. */
+function tracarSaturacao(ctx: CanvasRenderingContext2D, de: number, para: number): void {
+  const passo = de <= para ? PASSO_CURVA : -PASSO_CURVA;
+  const passos = Math.max(1, Math.ceil(Math.abs(para - de) / PASSO_CURVA));
+  for (let i = 1; i <= passos; i += 1) {
+    const t = i === passos ? para : de + passo * i;
+    ctx.lineTo(tbsToX(t), wToY(urParaW(100, t) * 1000));
+  }
+}
+
+/** Segue a isoentálpica do estado inicial até a temperatura final. */
+function tracarPorEntalpia(ctx: CanvasRenderingContext2D, segmento: ProcessSegment): void {
+  const h = calcularEntalpia(segmento.inicio.tbs, segmento.inicio.wGkg / 1000);
+  const passos = Math.max(
+    1,
+    Math.ceil(Math.abs(segmento.fim.tbs - segmento.inicio.tbs) / PASSO_CURVA),
+  );
+  for (let i = 1; i <= passos; i += 1) {
+    const t =
+      segmento.inicio.tbs + ((segmento.fim.tbs - segmento.inicio.tbs) * i) / passos;
+    ctx.lineTo(tbsToX(t), wToY(entalpiaParaW(h, t) * 1000));
+  }
+}
+
+/** Ponta de seta no fim do trecho: sem ela a carta não diz para onde o processo anda. */
+function desenharSeta(ctx: CanvasRenderingContext2D, segmento: ProcessSegment): void {
+  const referencia = segmento.joelho ?? segmento.inicio;
+  const x = tbsToX(segmento.fim.tbs);
+  const y = wToY(segmento.fim.wGkg);
+  const angulo = Math.atan2(y - wToY(referencia.wGkg), x - tbsToX(referencia.tbs));
+  const tamanho = 9;
+
+  ctx.beginPath();
+  ctx.moveTo(x, y);
+  ctx.lineTo(
+    x - tamanho * Math.cos(angulo - Math.PI / 7),
+    y - tamanho * Math.sin(angulo - Math.PI / 7),
+  );
+  ctx.lineTo(
+    x - tamanho * Math.cos(angulo + Math.PI / 7),
+    y - tamanho * Math.sin(angulo + Math.PI / 7),
+  );
+  ctx.closePath();
+  ctx.fillStyle = CORES_ETAPA[segmento.tipo];
+  ctx.fill();
+}
+
+function desenharLegendaEtapas(
+  ctx: CanvasRenderingContext2D,
+  segments: ProcessSegment[],
+): void {
+  const tipos = [...new Set(segments.map((s) => s.tipo))];
+  const plot = getPlotBounds();
+  ctx.save();
+  ctx.font = "12px Segoe UI";
+  ctx.textBaseline = "middle";
+
+  let y = plot.top + 12;
+  for (const tipo of tipos) {
+    ctx.strokeStyle = CORES_ETAPA[tipo];
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(plot.left + 12, y);
+    ctx.lineTo(plot.left + 40, y);
+    ctx.stroke();
+
+    ctx.fillStyle = CORES.rotuloEixo;
+    ctx.fillText(ROTULOS_ETAPA[tipo], plot.left + 48, y);
+    y += 18;
+  }
+  ctx.restore();
 }
 
 function desenharFundo(ctx: CanvasRenderingContext2D): void {
@@ -263,16 +406,25 @@ function desenharVetorProcesso(ctx: CanvasRenderingContext2D, points: ProcessPoi
   ctx.stroke();
 }
 
-/** Deslocamentos manuais dos rótulos, para nenhum cair sobre o vetor do processo. */
-const DESLOCAMENTO_ROTULO: Record<string, { dx: number; dy: number }> = {
-  P1: { dx: 10, dy: -12 },
-  P2: { dx: -22, dy: -8 },
-  P3: { dx: -10, dy: -14 },
-  P4: { dx: 10, dy: -8 },
-};
+/**
+ * Rótulo acima ou abaixo do ponto conforme o vizinho, em vez de deslocamento fixo por
+ * nome. Com o processo, o número de pontos e a posição deles mudam com os setpoints — uma
+ * tabela P1..P4 escrita à mão deixaria P5 sem regra e erraria assim que a carta mudasse.
+ */
+function deslocamentoDoRotulo(
+  points: ProcessPoint[],
+  indice: number,
+): { dx: number; dy: number } {
+  const atual = points[indice];
+  const vizinho = points[indice + 1] ?? points[indice - 1];
+  // Vizinho acima empurra o rótulo para baixo, e vice-versa.
+  const acima = vizinho ? vizinho.wKgKg > atual.wKgKg : false;
+  const direita = vizinho ? vizinho.tbs > atual.tbs : true;
+  return { dx: direita ? -26 : 10, dy: acima ? 18 : -10 };
+}
 
 function desenharPontosProcesso(ctx: CanvasRenderingContext2D, points: ProcessPoint[]): void {
-  for (const ponto of points) {
+  points.forEach((ponto, indice) => {
     const x = tbsToX(ponto.tbs);
     const y = wToY(ponto.wKgKg * 1000);
 
@@ -281,11 +433,15 @@ function desenharPontosProcesso(ctx: CanvasRenderingContext2D, points: ProcessPo
     ctx.arc(x, y, 5, 0, Math.PI * 2);
     ctx.fill();
 
-    const deslocamento = DESLOCAMENTO_ROTULO[ponto.nome] ?? { dx: 8, dy: -8 };
-    ctx.fillStyle = CORES.rotuloEixo;
+    const deslocamento = deslocamentoDoRotulo(points, indice);
     ctx.font = "bold 12px Segoe UI";
+    // Halo branco: os rótulos passam sobre as isolinhas e o texto sumia em cima delas.
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = CORES.fundo;
+    ctx.strokeText(ponto.nome, x + deslocamento.dx, y + deslocamento.dy);
+    ctx.fillStyle = CORES.rotuloEixo;
     ctx.fillText(ponto.nome, x + deslocamento.dx, y + deslocamento.dy);
-  }
+  });
 }
 
 function desenharCursor(ctx: CanvasRenderingContext2D, probe: ProbeState): void {
