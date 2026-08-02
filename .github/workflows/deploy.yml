@@ -142,6 +142,27 @@ jobs:
           echo "Deploy verificado."
           REMOTO
 
+      # Roda DEPOIS do deploy e na VPS, e não no runner, porque o corpus mora no volume
+      # `carta-db` junto com as fotos: no GitHub não existe nada para medir.
+      #
+      # Não bloqueia. O deploy já aconteceu, e reprovar aqui não desfaz nada — o que este
+      # passo entrega é o sinal de que o perfil vigente passou a produzir erro silencioso
+      # sobre as leituras que os usuários rotularam. Reverter sozinho é a Fase 4.
+      - name: Medir o OCR contra o corpus acumulado
+        continue-on-error: true
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_PATH: ${{ vars.VPS_PATH || '/home/mahu-entalpia' }}
+        run: |
+          ssh -i ~/.ssh/id_deploy -o BatchMode=yes "$VPS_USER@$VPS_HOST" \
+            "APP_DIR='$VPS_PATH' bash -euo pipefail -s" <<'REMOTO'
+          cd "$APP_DIR"
+          docker compose -f docker-compose.server.yml run --rm --no-deps \
+            -v "$APP_DIR/scripts:/scripts:ro" \
+            backend python /scripts/avaliar_corpus.py
+          REMOTO
+
       - name: Limpar imagens órfãs
         if: success()
         env:

@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from backend.database import init_db
 from backend.routes.pontos import router as pontos_router
 from backend.routes.processo import router as processo_router
+from backend.services.armazenamento_perfil import carregar_perfil_ativo
 from backend.services.telemetria_ocr import purgar_imagens_antigas
 
 # O frontend é servido pelo nginx (container) ou pelo dev server do Vite, e nos dois casos
@@ -36,6 +37,10 @@ async def lifespan(_: FastAPI):
     await init_db()
     # Depois das migrações: a purga consulta a tabela que a migração 2 cria.
     await purgar_imagens_antigas()
+    # Semeia o perfil do código na primeira subida e fixa o vigente no processo. Ler o
+    # perfil por requisição custaria uma ida ao banco em cada leitura para buscar uma
+    # configuração que muda uma vez por semana, na melhor das hipóteses.
+    await carregar_perfil_ativo()
     yield
 
 

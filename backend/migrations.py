@@ -158,10 +158,191 @@ CREATE TABLE IF NOT EXISTS etapas_processo (
 );
 """
 
+# Por que a leitura saiu como saiu, e o que o usuário fez com ela.
+#
+# A migração 2 registra QUE o OCR errou (sugerido != aplicado) e não registra NADA sobre a
+# foto. Com isso não dá para separar "foto ruim" de "OCR ruim", que pedem correções opostas:
+# uma se resolve guiando a captura, a outra mexendo no reconhecimento. As colunas de
+# alinhamento e qualidade abaixo são o vetor que descreve cada captura, e é sobre ele que os
+# limiares do pré-voo e do guia de câmera passam a ser medidos em vez de chutados.
+#
+# `desfecho` fecha a outra metade: hoje a leitura descartada some no cliente
+# (`useMahuStore.descartarLeitura` só limpa o estado) e fica com `pv_aplicado` NULL para
+# sempre, indistinguível de quem fechou a aba. Descarte é o rótulo mais forte de foto ruim
+# que este fluxo produz, e estava sendo jogado fora inteiro.
+_V4_QUALIDADE_DA_CAPTURA = """
+-- Como a foto chegou ao espaço canônico: 'homografia' | 'quadrilatero' | 'resize'.
+-- Cair fora da homografia já é sinal de foto ruim, antes de olhar qualquer número lido.
+ALTER TABLE leituras_ocr ADD COLUMN align_metodo TEXT;
+ALTER TABLE leituras_ocr ADD COLUMN align_inliers INTEGER;
+-- Erro de reprojeção em pixels do espaço canônico (1200x480), o mesmo das ROIs.
+ALTER TABLE leituras_ocr ADD COLUMN align_erro_reproj REAL;
+-- Pior erro LOCAL entre os campos. A #28 casou bem à direita e derivou à esquerda; a
+-- mediana global esconde exatamente esse caso, este número não.
+ALTER TABLE leituras_ocr ADD COLUMN align_erro_reproj_pior REAL;
+
+ALTER TABLE leituras_ocr ADD COLUMN nitidez REAL;
+ALTER TABLE leituras_ocr ADD COLUMN reflexo REAL;
+ALTER TABLE leituras_ocr ADD COLUMN preenchimento REAL;
+ALTER TABLE leituras_ocr ADD COLUMN inclinacao_graus REAL;
+ALTER TABLE leituras_ocr ADD COLUMN px_por_digito REAL;
+
+-- 'pendente'   = leitura devolvida e ainda sem resposta do usuário
+-- 'aplicada'   = aceita como lida
+-- 'corrigida'  = aceita com ao menos um campo alterado
+-- 'descartada' = jogada fora; `motivo_descarte` diz o que estava errado
+ALTER TABLE leituras_ocr ADD COLUMN desfecho TEXT NOT NULL DEFAULT 'pendente';
+ALTER TABLE leituras_ocr ADD COLUMN motivo_descarte TEXT;
+-- Quando o usuário refotografou: liga a tentativa ruim à boa, que é um par de treino
+-- muito mais informativo que qualquer uma das duas isolada.
+ALTER TABLE leituras_ocr ADD COLUMN substituida_por INTEGER REFERENCES leituras_ocr(id);
+-- Tempo entre abrir a conferência e aplicar. Aplicar em 1,5 s é carimbo, não conferência:
+-- foi assim que a #28 entrou no banco. Sem isso, "aplicada sem correção" seria tratada
+-- como verdade forte mesmo quando ninguém olhou.
+ALTER TABLE leituras_ocr ADD COLUMN ms_na_conferencia INTEGER;
+-- Imune à purga por retenção. Ver `purgar_imagens_antigas`: sem esta coluna, a retenção
+-- de 90 dias apagaria justamente as fotos rotuladas, que são o corpus.
+ALTER TABLE leituras_ocr ADD COLUMN preservar INTEGER NOT NULL DEFAULT 0;
+
+-- Erro de reprojeção na vizinhança DESTE campo. É o que permite dizer "tt01 estava 9 px
+-- fora do lugar" em vez de só "a leitura tinha alinhamento ruim".
+ALTER TABLE leituras_ocr_campos ADD COLUMN erro_reproj_local REAL;
+
+-- As leituras que já existem têm desfecho conhecido: quem tem `pv_aplicado` foi aplicada,
+-- e a procedência gravada em `simulacoes` diz quais foram corrigidas. Deixá-las em
+-- 'pendente' descartaria o histórico que já está pago.
+UPDATE leituras_ocr SET desfecho = 'aplicada'
+ WHERE id IN (SELECT leitura_id FROM leituras_ocr_campos WHERE pv_aplicado IS NOT NULL);
+
+UPDATE leituras_ocr SET desfecho = 'corrigida', preservar = 1
+ WHERE id IN (
+     SELECT leitura_id FROM simulacoes
+      WHERE origem = 'ocr_corrigida' AND leitura_id IS NOT NULL
+ );
+
+CREATE INDEX IF NOT EXISTS idx_leituras_ocr_desfecho ON leituras_ocr (desfecho);
+"""
+
+# Os parâmetros da leitura, versionados.
+#
+# Enquanto ROIs, limiares e faixas forem constantes de módulo, o corpus não serve para nada:
+# ele cresce a cada foto e nenhum número muda por causa disso. Guardar a configuração como
+# LINHA é o que permite (a) uma configuração nova entrar sem deploy e (b) medir duas
+# configurações sobre o mesmo corpus — que é impossível com constante de módulo, porque só
+# existe uma por processo.
+#
+# `leituras_ocr.perfil_id` é a outra metade: sem saber sob qual configuração cada leitura
+# foi feita, não há como atribuir uma melhora ou uma piora a coisa alguma.
+_V5_PERFIS_OCR = """
+CREATE TABLE IF NOT EXISTS perfis_ocr (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    -- JSON: rois, limiares, faixas e casas decimais. Só o que difere do código.
+    config TEXT NOT NULL,
+    -- Exatamente uma linha com 1, garantido pelo índice único parcial abaixo.
+    ativo INTEGER NOT NULL DEFAULT 0,
+    -- 'codigo'   = semeado a partir das constantes do fonte
+    -- 'afinador' = montado a partir do corpus
+    -- 'rollback' = reativação de um perfil anterior após piora medida
+    origem TEXT NOT NULL DEFAULT 'codigo',
+    derivado_de INTEGER REFERENCES perfis_ocr(id),
+    -- Placar que justificou a promoção. Fica gravado para a decisão ser auditável depois,
+    -- inclusive quando o corpus já mudou e o número não puder mais ser reproduzido.
+    acerto REAL,
+    erros_silenciosos INTEGER,
+    amostras INTEGER
+);
+
+-- Dois perfis ativos ao mesmo tempo significaria que metade das leituras usou uma
+-- configuração e metade usou outra, sem nada no banco dizendo qual. O índice parcial faz o
+-- banco recusar isso em vez de deixar acontecer em silêncio.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_perfis_ocr_ativo ON perfis_ocr (ativo) WHERE ativo = 1;
+
+ALTER TABLE leituras_ocr ADD COLUMN perfil_id INTEGER REFERENCES perfis_ocr(id);
+"""
+
+# O placar de cada corrida do avaliador.
+#
+# `perfis_ocr.acerto` guarda o número que justificou uma promoção, mas só do vencedor e só
+# agregado. Sem estas tabelas não existe série temporal: não dá para dizer se a acurácia
+# está subindo ao longo dos meses, nem por que um candidato foi recusado, nem qual campo
+# vinha piorando antes de alguém notar. É a diferença entre um sistema que melhora e um que
+# se acha melhor.
+_V6_AVALIACOES_OCR = """
+CREATE TABLE IF NOT EXISTS avaliacoes_ocr (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    -- Junta as linhas do campeão e do candidato de uma mesma comparação.
+    corrida TEXT NOT NULL,
+    perfil_id INTEGER NOT NULL REFERENCES perfis_ocr(id),
+    -- 'campeao' | 'candidato'
+    papel TEXT NOT NULL,
+    leituras INTEGER NOT NULL,
+    acertos INTEGER NOT NULL,
+    total INTEGER NOT NULL,
+    erros_silenciosos INTEGER NOT NULL,
+    -- Só na linha do candidato: 'promovido' | 'recusado' | 'simulado', e o motivo em
+    -- texto. Guardar o motivo da RECUSA é o que evita repetir a mesma tentativa sem saber.
+    -- 'simulado' é o candidato que venceu e não entrou porque a corrida era um ensaio.
+    decisao TEXT,
+    motivo TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_avaliacoes_ocr_corrida ON avaliacoes_ocr (corrida);
+
+-- O agregado esconde o campo que sempre erra, e é ele que precisa de ROI nova ou de outra
+-- variante de pré-processamento.
+CREATE TABLE IF NOT EXISTS avaliacoes_ocr_campos (
+    avaliacao_id INTEGER NOT NULL,
+    key TEXT NOT NULL,
+    acertos INTEGER NOT NULL,
+    total INTEGER NOT NULL,
+    erros_silenciosos INTEGER NOT NULL,
+    PRIMARY KEY (avaliacao_id, key),
+    FOREIGN KEY (avaliacao_id) REFERENCES avaliacoes_ocr(id)
+);
+"""
+
+# O que o juiz não pega, e o que ele nem deveria julgar.
+#
+# `revertido_em` existe porque a promoção é uma aposta sobre 20% do corpus, e a produção é a
+# única prova real. Um candidato pode ganhar no conjunto de teste e piorar na planta — foto
+# de outra hora do dia, outra pessoa segurando o celular. Sem marcar o perfil revertido, o
+# afinador reproporia a mesma configuração no ciclo seguinte, ela venceria o mesmo teste
+# outra vez, e o sistema entraria em ciclo.
+#
+# `limiares_captura` fica FORA do perfil de propósito. O juiz mede acerto do OCR sobre fotos
+# já tiradas, e mudar o limiar do guia de câmera não altera nenhuma dessas leituras — todo
+# candidato sairia "idêntico ao vigente" e nada jamais entraria. São coisas que melhoram por
+# caminhos diferentes: uma muda como se lê, a outra muda que foto chega.
+_V7_VIGILANCIA_E_CAPTURA = """
+ALTER TABLE perfis_ocr ADD COLUMN revertido_em TIMESTAMP;
+ALTER TABLE perfis_ocr ADD COLUMN motivo_reversao TEXT;
+
+CREATE TABLE IF NOT EXISTS limiares_captura (
+    -- Linha única: é a configuração do guia, e ela é uma só.
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    atualizado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    -- Derivados do corpus quando há amostra; até lá, os valores medidos à mão sobre as
+    -- 9 fotos de docs/fotosMahu.
+    px_por_digito_min REAL NOT NULL,
+    nitidez_min REAL NOT NULL,
+    reflexo_max REAL NOT NULL,
+    inclinacao_max REAL NOT NULL,
+    erro_reproj_max REAL NOT NULL,
+    -- Quantas leituras sustentaram estes números. 0 = ainda são os do código.
+    amostras INTEGER NOT NULL DEFAULT 0
+);
+"""
+
 MIGRACOES: list[tuple[int, str]] = [
     (1, _V1_ESTRUTURA_INICIAL),
     (2, _V2_TELEMETRIA_OCR),
     (3, _V3_PROCESSO),
+    (4, _V4_QUALIDADE_DA_CAPTURA),
+    (5, _V5_PERFIS_OCR),
+    (6, _V6_AVALIACOES_OCR),
+    (7, _V7_VIGILANCIA_E_CAPTURA),
 ]
 
 

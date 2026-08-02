@@ -194,6 +194,42 @@ export interface MahuAviso {
   campos: string[];
 }
 
+/**
+ * Como a foto foi tirada — não o que ela dizia. É o vetor que separa "foto ruim" de
+ * "OCR ruim", que pedem correções opostas: uma se resolve guiando a captura, a outra
+ * mexendo no reconhecimento.
+ */
+export interface MahuQualidade {
+  /** `homografia` | `quadrilatero` | `resize`, em ordem decrescente de confiabilidade. */
+  align_metodo: string;
+  align_inliers: number | null;
+  /** Erro de reprojeção em pixels do espaço canônico (1200x480), o mesmo das ROIs. */
+  align_erro_reproj: number | null;
+  /** Pior erro local entre os campos: denuncia o bloco que derivou sozinho. */
+  align_erro_reproj_pior: number | null;
+  nitidez: number | null;
+  reflexo: number | null;
+  preenchimento: number | null;
+  inclinacao_graus: number | null;
+  /** Altura de um dígito em pixels da foto original: a resolução que o OCR teve. */
+  px_por_digito: number | null;
+}
+
+/** Por que o usuário jogou a leitura fora. Os três primeiros rotulam a FOTO. */
+export type MahuMotivoDescarte = "borrada" | "reflexo" | "cortada" | "leu_errado";
+
+/**
+ * Veredito sobre um quadro da câmera, antes de qualquer leitura. Uma instrução por vez:
+ * quatro avisos ao mesmo tempo viram uma lista de reclamações que a pessoa lê e ignora.
+ */
+export interface MahuEnquadramento {
+  pronto: boolean;
+  instrucao: string | null;
+  /** Identificador estável do problema — compare por ele, não pelo texto. */
+  codigo: string | null;
+  qualidade: MahuQualidade;
+}
+
 export interface MahuLeituraResponse {
   /** Identifica a leitura na telemetria; volta em `MahuCamposInput.leitura_id`. */
   id: number | null;
@@ -206,9 +242,11 @@ export interface MahuLeituraResponse {
   requires_review: boolean;
   missing_keys: string[];
   avisos: MahuAviso[];
+  /** `null` nas leituras gravadas antes da migração 4. */
+  qualidade: MahuQualidade | null;
 }
 
-/** Campos obrigatórios de `MahuCamposInput`, já conferidos pelo usuário. */
+/** Campos do painel já conferidos pelo usuário. */
 export interface MahuCamposInput {
   mt_01: number;
   tt01: number;
@@ -216,6 +254,18 @@ export interface MahuCamposInput {
   tt06: number;
   mt07: number;
   tt07: number;
+  /**
+   * Opcionais porque o painel os mostra num bloco de 3 linhas com 17 px entre SP, PV e MV:
+   * é o recorte mais arriscado da tela, e falhar neles não pode invalidar os outros seis.
+   * Presentes, viram desvio contra o processo e entram no corpus.
+   */
+  umd_abs_pv?: number | null;
+  tt04_entalpia_pv?: number | null;
   /** Liga o aplicado ao sugerido, para o backend rotular o erro de OCR. */
   leitura_id?: number | null;
+  /**
+   * Tempo com a conferência aberta antes de aplicar. Separa "conferiu e aceitou" de
+   * "carimbou sem olhar" — as duas coisas não podem valer como o mesmo rótulo no corpus.
+   */
+  ms_na_conferencia?: number | null;
 }

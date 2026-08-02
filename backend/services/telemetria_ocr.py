@@ -19,6 +19,14 @@ from dataclasses import asdict
 
 from backend.database import DB_PATH, get_db
 from backend.models import MahuCampoOCR
+from backend.services.mahu_metricas import (
+    DESFECHO_APLICADA,
+    DESFECHO_CORRIGIDA,
+    DESFECHO_DESCARTADA,
+    MOTIVOS_DESCARTE,
+    Alinhamento,
+    Qualidade,
+)
 from backend.services.mahu_validacao import Aviso, LeituraAnterior
 
 # Ao lado do banco por padrão: em container o CARTA_DB_PATH aponta para /data, que já é
@@ -51,19 +59,42 @@ async def registrar_leitura(
     requires_review: bool,
     avisos: list[Aviso],
     image_bytes: bytes,
+    alinhamento: Alinhamento,
+    qualidade: Qualidade,
+    perfil_id: int | None,
 ) -> int:
-    """Grava a leitura e devolve o id que o frontend devolve ao aplicar."""
+    """Grava a leitura e devolve o id que o frontend devolve ao aplicar.
+
+    `alinhamento` e `qualidade` descrevem a FOTO, não o resultado. É o par que permite
+    separar "foto ruim" de "OCR ruim" depois — sem eles o banco registra que a leitura
+    errou e não dá pista nenhuma de onde mexer.
+    """
     async with get_db() as db:
         cursor = await db.execute(
             """
-            INSERT INTO leituras_ocr (imagem_sha256, imagem_bytes, requires_review, avisos)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO leituras_ocr (
+                imagem_sha256, imagem_bytes, requires_review, avisos,
+                align_metodo, align_inliers, align_erro_reproj, align_erro_reproj_pior,
+                nitidez, reflexo, preenchimento, inclinacao_graus, px_por_digito,
+                perfil_id
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 hashlib.sha256(image_bytes).hexdigest(),
                 len(image_bytes),
                 int(requires_review),
                 json.dumps([asdict(aviso) for aviso in avisos], ensure_ascii=False),
+                alinhamento.metodo,
+                alinhamento.inliers,
+                alinhamento.erro_reproj,
+                alinhamento.erro_reproj_pior,
+                qualidade.nitidez,
+                qualidade.reflexo,
+                qualidade.preenchimento,
+                qualidade.inclinacao_graus,
+                qualidade.px_por_digito,
+                perfil_id,
             ),
         )
         leitura_id = cursor.lastrowid
@@ -71,8 +102,9 @@ async def registrar_leitura(
         await db.executemany(
             """
             INSERT INTO leituras_ocr_campos
-                (leitura_id, key, raw_text, pv_sugerido, confidence, status, motivo)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                (leitura_id, key, raw_text, pv_sugerido, confidence, status, motivo,
+                 erro_reproj_local)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 (
@@ -83,6 +115,7 @@ async def registrar_leitura(
                     campo.confidence,
                     campo.status,
                     campo.motivo,
+                    alinhamento.erro_por_campo.get(campo.key),
                 )
                 for campo in campos
             ],
@@ -114,11 +147,21 @@ def _gravar_imagem(leitura_id: int, image_bytes: bytes) -> str | None:
         return None
 
 
-async def registrar_aplicacao(leitura_id: int, aplicados: dict[str, float]) -> str:
+async def registrar_aplicacao(
+    leitura_id: int,
+    aplicados: dict[str, float],
+    *,
+    ms_na_conferencia: int | None = None,
+) -> str:
     """Anota o que o usuário de fato aplicou e devolve a origem da simulação.
 
     'ocr_corrigida' quando algum campo saiu diferente do sugerido — é essa divergência que
     o avaliador usa como rótulo.
+
+    `ms_na_conferencia` é quanto tempo o formulário ficou aberto. Não muda nada aqui, mas é
+    o que depois distingue uma conferência de um carimbo: aplicar em um segundo e meio sem
+    corrigir nada não é evidência de que a leitura estava certa — foi assim que a #28
+    entrou no banco com quatro campos corrompidos.
     """
     async with get_db() as db:
         cursor = await db.execute(
@@ -133,15 +176,70 @@ async def registrar_aplicacao(leitura_id: int, aplicados: dict[str, float]) -> s
             "UPDATE leituras_ocr_campos SET pv_aplicado = ? WHERE leitura_id = ? AND key = ?",
             [(valor, leitura_id, key) for key, valor in aplicados.items()],
         )
+
+        # Comparação em ponto flutuante com tolerância da resolução do display: o valor
+        # volta do navegador como texto e pode reaparecer como 11.800000000000001.
+        corrigida = any(
+            sugeridos.get(key) is None or abs(sugeridos[key] - valor) > 1e-6
+            for key, valor in aplicados.items()
+        )
+
+        await db.execute(
+            """
+            UPDATE leituras_ocr
+               SET desfecho = ?, ms_na_conferencia = ?, preservar = ?
+             WHERE id = ?
+            """,
+            (
+                DESFECHO_CORRIGIDA if corrigida else DESFECHO_APLICADA,
+                ms_na_conferencia,
+                # Correção à mão é o rótulo mais forte que existe aqui: o usuário digitou o
+                # valor certo. Marcar como preservada tira essa foto do alcance da purga
+                # por retenção, que senão apagaria justamente o corpus.
+                int(corrigida),
+                leitura_id,
+            ),
+        )
         await db.commit()
 
-    # Comparação em ponto flutuante com tolerância da resolução do display: o valor volta
-    # do navegador como texto e pode reaparecer como 11.800000000000001.
-    corrigida = any(
-        sugeridos.get(key) is None or abs(sugeridos[key] - valor) > 1e-6
-        for key, valor in aplicados.items()
-    )
     return "ocr_corrigida" if corrigida else "ocr_conferida"
+
+
+async def registrar_descarte(
+    leitura_id: int,
+    *,
+    motivo: str | None = None,
+    ms_na_conferencia: int | None = None,
+    substituida_por: int | None = None,
+) -> bool:
+    """Anota que o usuário jogou a leitura fora, e por quê. False se o id não existe.
+
+    É o rótulo que faltava. Aplicar e corrigir dizem o que o OCR errou; descartar diz que a
+    FOTO não servia — e é a única fonte de exemplo negativo de captura que este fluxo
+    produz. Sem isso, a leitura abandonada ficava indistinguível de quem fechou a aba no
+    meio, e as duas eram lidas como "pendente para sempre".
+
+    Sempre preserva a imagem: foto ruim rotulada vale mais para o modelo de qualidade que
+    uma foto boa a mais, e é exatamente o que a retenção de 90 dias apagaria primeiro.
+    """
+    if motivo is not None and motivo not in MOTIVOS_DESCARTE:
+        raise ValueError(f"Motivo de descarte desconhecido: {motivo!r}.")
+
+    async with get_db() as db:
+        cursor = await db.execute(
+            """
+            UPDATE leituras_ocr
+               SET desfecho = ?, motivo_descarte = ?, ms_na_conferencia = ?,
+                   substituida_por = ?, preservar = 1
+             WHERE id = ? AND desfecho = 'pendente'
+            """,
+            (DESFECHO_DESCARTADA, motivo, ms_na_conferencia, substituida_por, leitura_id),
+        )
+        await db.commit()
+
+    # Zero linhas quer dizer id inexistente ou leitura que já tinha desfecho. Os dois casos
+    # são benignos: o cliente pode reenviar o descarte ao fechar o modal depois de aplicar.
+    return cursor.rowcount > 0
 
 
 async def ultima_leitura_aplicada() -> LeituraAnterior | None:
@@ -181,6 +279,11 @@ async def purgar_imagens_antigas() -> int:
 
     Roda no boot, e não num agendador: o volume cresce na velocidade das fotos tiradas, que
     é lenta, e um processo a mais para manter não se paga aqui.
+
+    Fotos com `preservar = 1` ficam para sempre. A partir do momento em que a foto é o
+    corpus — e não um resíduo do processamento — a retenção passa a ser uma ameaça ao ativo
+    que ela deveria estar limitando: as leituras rotuladas são raras e valiosas, e eram
+    justamente as primeiras a envelhecer.
     """
     if RETENCAO_DIAS <= 0:
         return 0
@@ -193,6 +296,7 @@ async def purgar_imagens_antigas() -> int:
             """
             SELECT id, imagem_arquivo FROM leituras_ocr
             WHERE imagem_arquivo IS NOT NULL
+              AND preservar = 0
               AND criado_em < datetime('now', ?)
             """,
             (f"-{RETENCAO_DIAS} days",),
@@ -216,10 +320,20 @@ async def purgar_imagens_antigas() -> int:
 
         await db.commit()
 
-    # Órfãos: arquivo em disco sem linha correspondente, resultado de queda entre o INSERT
-    # e o UPDATE do nome.
+        # Órfãos: arquivo em disco sem linha correspondente, resultado de queda entre o
+        # INSERT e o UPDATE do nome. A varredura precisa conhecer os arquivos ainda
+        # referenciados — antes ela apagava por idade e mais nada, o que passava
+        # despercebido enquanto toda foto vencia junto. Com `preservar`, apagaria as
+        # imagens do corpus por trás da consulta acima, que acabou de poupá-las.
+        cursor = await db.execute(
+            "SELECT imagem_arquivo FROM leituras_ocr WHERE imagem_arquivo IS NOT NULL"
+        )
+        referenciados = {linha["imagem_arquivo"] for linha in await cursor.fetchall()}
+
     if os.path.isdir(MEDIA_DIR):
         for nome in os.listdir(MEDIA_DIR):
+            if nome in referenciados:
+                continue
             caminho = os.path.join(MEDIA_DIR, nome)
             try:
                 if os.path.isfile(caminho) and os.path.getmtime(caminho) < limite:

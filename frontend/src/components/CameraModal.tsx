@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 
 import { ActionButton } from "@/components/ui/ActionButton";
 import { useCamera } from "@/hooks/useCamera";
@@ -11,7 +11,13 @@ interface CameraModalProps {
 }
 
 export function CameraModal({ onCapturar, onFechar, onIndisponivel }: CameraModalProps) {
-  const { videoRef, dica, indisponivel, capturar } = useCamera(true);
+  const { videoRef, dica, indisponivel, enquadramento, capturar } = useCamera(true);
+  // Pré-voo sem viagem extra: o guia já mediu um quadro há menos de dois segundos, e mandar
+  // outro no disparo só adicionaria latência para reconfirmar o que já se sabe. Quando o
+  // enquadramento não está pronto, o botão avisa e o segundo toque manda assim mesmo — o
+  // usuário é quem está olhando o painel, e travar a captura seria pior que uma foto ruim.
+  const [insistindo, setInsistindo] = useState(false);
+  const bloqueado = enquadramento != null && !enquadramento.pronto && !insistindo;
 
   useEffect(() => {
     if (indisponivel) {
@@ -30,6 +36,10 @@ export function CameraModal({ onCapturar, onFechar, onIndisponivel }: CameraModa
   }, [onFechar]);
 
   const tirarFoto = async () => {
+    if (bloqueado) {
+      setInsistindo(true);
+      return;
+    }
     const file = await capturar();
     if (file) {
       onCapturar(file);
@@ -69,8 +79,25 @@ export function CameraModal({ onCapturar, onFechar, onIndisponivel }: CameraModa
             aria-hidden="true"
             className="pointer-events-none absolute inset-0 flex items-center justify-center p-[4%]"
           >
-            <div className="aspect-5/2 w-full rounded-md border-2 border-dashed border-white/75" />
+            {/* A moldura fica verde quando o backend diz que o enquadramento serve. É o
+                retorno mais rápido possível: a pessoa vê o resultado do próprio movimento
+                sem precisar ler nada. */}
+            <div
+              className={`aspect-5/2 w-full rounded-md border-2 border-dashed transition-colors ${
+                enquadramento?.pronto ? "border-emerald-400" : "border-white/75"
+              }`}
+            />
           </div>
+
+          {/* Uma instrução por vez, a mais urgente. O backend já escolheu qual. */}
+          {enquadramento?.instrucao && (
+            <p
+              role="status"
+              className="pointer-events-none absolute inset-x-2 bottom-2 rounded-md bg-slate-900/80 px-2 py-1.5 text-center text-[13px] font-medium text-white"
+            >
+              {enquadramento.instrucao}
+            </p>
+          )}
         </div>
 
         <div className="paisagem:flex paisagem:w-44 paisagem:shrink-0 paisagem:flex-col paisagem:overflow-y-auto">
@@ -79,8 +106,12 @@ export function CameraModal({ onCapturar, onFechar, onIndisponivel }: CameraModa
           </p>
 
           <div className="mt-3 flex flex-wrap gap-2 paisagem:flex-col paisagem:flex-nowrap">
-            <ActionButton className="flex-1 basis-35" onClick={() => void tirarFoto()}>
-              Tirar foto
+            <ActionButton
+              className="flex-1 basis-35"
+              variante={bloqueado ? "ghost" : "primary"}
+              onClick={() => void tirarFoto()}
+            >
+              {bloqueado ? "Tirar mesmo assim" : "Tirar foto"}
             </ActionButton>
             <ActionButton variante="ghost" className="flex-1 basis-35" onClick={onFechar}>
               Cancelar

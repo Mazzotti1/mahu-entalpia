@@ -18,7 +18,7 @@ from backend.models import (
 )
 from backend.routes.pontos import persistir_simulacao
 from backend.services.desvios import calcular_desvios
-from backend.services.mahu_campos import CAMPOS_OBRIGATORIOS
+from backend.services.mahu_campos import CAMPOS_CONFERIVEIS
 from backend.services.telemetria_ocr import registrar_aplicacao
 from backend.services.armazenamento_processo import (
     gravar_processo,
@@ -121,8 +121,17 @@ async def calcular_processo_do_mahu(campos: MahuCamposInput) -> ProcessoResponse
 
     origem = "manual"
     if campos.leitura_id is not None:
-        aplicados = {key: getattr(campos, key) for key in CAMPOS_OBRIGATORIOS}
-        origem = await registrar_aplicacao(campos.leitura_id, aplicados)
+        # Os campos do bloco SP/PV/MV podem vir nulos: o painel os mostra com 17 px entre
+        # linhas e nem toda foto os resolve. Filtrar aqui é o que permite eles entrarem no
+        # corpus quando existem sem estragar o par sugerido/aplicado quando não existem.
+        aplicados = {
+            key: valor
+            for key in CAMPOS_CONFERIVEIS
+            if (valor := getattr(campos, key, None)) is not None
+        }
+        origem = await registrar_aplicacao(
+            campos.leitura_id, aplicados, ms_na_conferencia=campos.ms_na_conferencia
+        )
 
     simulacao = await persistir_simulacao(
         _simulacao_do_processo(processo, "Processo MAHU via OCR", "Leitura do monitor MAHU."),
@@ -134,7 +143,11 @@ async def calcular_processo_do_mahu(campos: MahuCamposInput) -> ProcessoResponse
     resposta = montar_response(
         processo, balanco, processo_id=processo_id, simulacao_id=simulacao.id
     )
-    medidos = {key: getattr(campos, key) for key in CAMPOS_OBRIGATORIOS}
+    medidos = {
+        key: valor
+        for key in CAMPOS_CONFERIVEIS
+        if (valor := getattr(campos, key, None)) is not None
+    }
     resposta.desvios = [
         DesvioResponse(
             campo=d.campo,

@@ -55,6 +55,12 @@ Dois volumes nomeados, então `docker compose down` não perde nada:
 - `easyocr-models` → `/models/easyocr`, os ~80 MB de modelos que o easyocr baixa na
   primeira leitura
 
+As fotos lidas ficam em `/data/media`, no mesmo volume do banco. `CARTA_MEDIA_RETENCAO_DIAS`
+(padrão 90) apaga as antigas no boot — **exceto** as rotuladas: leitura que o usuário
+corrigiu à mão ou descartou fica guardada para sempre. Essas são o corpus com o qual o OCR
+é medido, e são justamente as que a retenção apagaria primeiro. `CARTA_GUARDAR_IMAGENS=0`
+desliga a guarda por completo, e `CARTA_MEDIA_RETENCAO_DIAS=0` mantém tudo.
+
 Para zerar tudo: `docker compose down -v`.
 
 ## Rodando sem Docker
@@ -95,7 +101,16 @@ backend/
 │   ├── mahu_parse.py          # Texto do OCR -> valor (puro, sem OpenCV)
 │   ├── mahu_validacao.py      # Coerência entre campos da leitura
 │   ├── mahu_ocr.py            # Alinhamento, recorte das ROIs e OCR
-│   ├── telemetria_ocr.py      # Sugerido vs aplicado, e a foto
+│   ├── mahu_metricas.py       # Tipos das métricas de captura (puro)
+│   ├── mahu_qualidade.py      # Nitidez, reflexo, enquadramento, erro de reprojeção
+│   ├── telemetria_ocr.py      # Sugerido vs aplicado, desfecho e a foto
+│   ├── perfil_ocr.py          # ROIs, limiares e faixas como configuração versionada
+│   ├── armazenamento_perfil.py # Semear, ler o vigente, gravar candidato, promover
+│   ├── corpus_ocr.py          # Camadas de verdade e a regra de promoção (puro)
+│   ├── vigilancia_ocr.py      # Desfaz a promoção que azedou em produção (puro)
+│   ├── guia_captura.py        # Vetor de qualidade -> instrução na tela (puro)
+│   ├── afinador_ocr.py        # Deriva os parâmetros do corpus, com as travas (puro)
+│   ├── armazenamento_corpus.py # Carregar o corpus rotulado, gravar o placar
 │   └── eventos.py             # Difusor em memória que alimenta o SSE
 ├── assets/
 │   └── mahu_template.png      # Gabarito canônico do painel (1200x480)
@@ -106,13 +121,106 @@ docs/fotosMahu/                # Fotos de referência do OCR + ground_truth.json
 
 Os três módulos `mahu_campos` <- `mahu_parse` <- `mahu_ocr` são separados de propósito:
 os dois primeiros não dependem de OpenCV nem do easyocr, e é o que permite importá-los
-sem instalar o ambiente completo (~2 GB por causa do torch).
+sem instalar o ambiente completo (~2 GB por causa do torch). `mahu_metricas`, `perfil_ocr`
+e `corpus_ocr` seguem a mesma regra.
+
+### Como a leitura melhora sozinha
+
+Cada leitura aplicada deixa no banco o par (sugerido, aplicado) e a foto no disco. Cada
+descarte deixa o motivo. Isso é ground truth que se acumula sem ninguém montar conjunto de
+teste — e é a diferença entre rodar um script nas mesmas 9 fotos e medir contra o que a
+planta de fato produz.
+
+O que a leitura usa — ROIs, limiares, faixas — não é constante de código: é uma linha em
+`perfis_ocr`. `avaliar_corpus.py` reprocessa a fatia mais recente do corpus sob o perfil
+vigente e sob um candidato, e troca um pelo outro **só quando o candidato ganha de forma
+que não se explica por acaso**:
+
+- nunca com mais erro silencioso que o vigente (leitura errada com status `ok`);
+- nunca com regressão em qualquer campo;
+- e a vantagem precisa passar num teste de McNemar exato (p ≤ 0,05) sobre os campos em que
+  os dois discordam.
+
+Aplicar em menos de 2 s sem corrigir nada não conta como conferência e fica fora do corpus:
+é carimbo, e foi assim que a leitura #28 entrou no banco com quatro campos corrompidos.
+
+A partição entre treino e teste é **temporal**, não aleatória. Duas fotos do mesmo painel
+com minutos de diferença são quase a mesma imagem; separadas ao acaso, uma treinaria e a
+outra julgaria o que o candidato praticamente decorou.
+
+Quem propõe é `afinar_ocr.py`, e ele só enxerga o treino. Cinco parâmetros, cada um com um
+mínimo de amostras abaixo do qual o afinador se cala:
+
+| Parâmetro | Vem de | Mínimo |
+|:--|:--|--:|
+| Faixa de operação por campo | quantis dos valores aplicados | 100 |
+| Casas decimais por campo | última casa ser sempre zero | 60 |
+| Confiança mínima | curva de erro silencioso × conferências | 120 |
+| Inliers mínimos da homografia | percentil 5 das leituras corretas | 80 |
+| ROIs | onde o texto apareceu, e onde ele encosta na borda | 40 |
+| Limiares do guia de câmera | percentil 5 das fotos que deram certo | 50 |
+
+As travas importam mais que os afinadores. Uma faixa nunca exclui valor já observado; as
+casas decimais só diminuem; o piso de inliers só sobe; e uma ROI anda no máximo 4 px por
+ciclo e nunca cresce sobre a região vizinha nem sobre uma âncora — essas últimas são
+geométricas porque os dados não denunciam esse caso: ler o setpoint da linha de cima dá um
+número plausível e dentro da faixa.
+
+### Âncoras: a deriva que a homografia esconde
+
+O erro de reprojeção diz que o alinhamento está ruim; não diz **onde**. Foi assim que a
+leitura #28 passou: a homografia casou o suficiente para o corte global e mesmo assim
+deslocou o bloco esquerdo do painel, e as ROIs daquele lado recortaram o lugar errado com
+confiança alta em todos os campos.
+
+Cada campo tem uma **âncora** — um trecho do desenho do painel (rótulo, moldura) que é
+idêntico em toda foto, escolhido automaticamente do gabarito por energia de borda, sem
+encostar em nenhuma ROI. Casando esse trecho na imagem retificada sai a deriva **local**, em
+pixels canônicos:
+
+- deriva ≤ 10 px com correlação ≥ 0,70 → a ROI é **deslocada** por ela. A deriva vem do
+  desenho, que é fixo: se o rótulo apareceu 6 px à direita, o número ao lado também apareceu;
+- fora disso → o campo vai para conferência, com o motivo em texto.
+
+Nas 9 fotos de referência a deriva máxima é 2 px e nenhum campo é mandado para conferência;
+numa deriva forjada de 7 px, as 8 ROIs a acompanham. Custo: ~5 ms por leitura.
+
+Promover é uma aposta sobre 20% do corpus; a produção é a prova real e continua depois. Toda
+corrida do juiz começa conferindo se a promoção anterior azedou — comparando as leituras que
+chegaram sob o perfil novo com as que chegaram sob o anterior (Fisher exato, amostras
+independentes) — e **reverte sozinha** se azedou. O perfil revertido fica marcado, senão o
+afinador reproporia a mesma configuração, ela venceria o mesmo teste, e o sistema entraria
+em ciclo.
+
+### O guia de câmera
+
+`POST /api/mahu/enquadramento` recebe um quadro pequeno e devolve **uma** instrução:
+"aproxime", "mude o ângulo", "firme o celular", "fique de frente", "centralize". Sem OCR —
+só o casamento com o gabarito, ~180 ms — então a câmera pode chamá-lo a cada 1,2 s enquanto
+o usuário mira. A moldura fica verde quando serve, e o botão vira "Tirar mesmo assim" quando
+não serve, porque quem está olhando o painel é o usuário.
+
+É a alavanca de precisão mais barata do fluxo: corrigir o ângulo custa dois segundos,
+enquanto a foto ruim custa 5 MB de upload, ~20 s de OCR e uma conferência inteira para
+terminar em descarte. Os limiares saem do percentil 5 das fotos que deram certo em produção
+— e ficam FORA do perfil de propósito, porque o juiz mede acerto sobre fotos já tiradas e
+mudar o guia não altera nenhuma delas.
+
+O laço completo é um comando:
+
+```bash
+docker compose run --rm -v "$PWD/scripts:/scripts" backend python /scripts/afinar_ocr.py
+```
+
+Vale rodá-lo periodicamente (um cron semanal na VPS), e não a cada deploy: o corpus cresce
+na velocidade das fotos tiradas à mão. `--so-propor` mostra o que sairia sem gravar nada.
 
 ```
 scripts/
-├── avaliar_ocr.py             # Acerto contra as fotos com ground truth
-└── relatorio_telemetria.py    # Acerto contra as correções feitas em produção
-scripts/avaliar_ocr.py         # Mede a acurácia contra o ground truth
+├── avaliar_ocr.py             # Acerto contra as 9 fotos com ground truth escrito à mão
+├── avaliar_corpus.py          # Acerto contra o corpus de produção; promove o que for melhor
+├── afinar_ocr.py              # Deriva um candidato do corpus e manda o juiz decidir
+└── relatorio_telemetria.py    # Estado do corpus, dos perfis e das avaliações
 
 frontend/
 ├── src/

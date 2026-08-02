@@ -1,7 +1,9 @@
 import { http, isHttpStatus } from "@/lib/http";
 import type {
   MahuCamposInput,
+  MahuEnquadramento,
   MahuLeituraResponse,
+  MahuMotivoDescarte,
   PontoInput,
   PontoResponse,
   ProcessoInput,
@@ -62,6 +64,46 @@ export async function lerMahuMonitor(
     },
   });
   return data;
+}
+
+/**
+ * Diz o que corrigir no enquadramento, sem ler número nenhum.
+ *
+ * Timeout curto de propósito: é um quadro de vídeo, e uma resposta que chega depois do
+ * usuário já ter mexido no celular só atrapalharia. Melhor perder o quadro.
+ */
+export async function avaliarEnquadramento(file: File): Promise<MahuEnquadramento> {
+  const body = new FormData();
+  body.append("image", file);
+  const { data } = await http.post<MahuEnquadramento>("/mahu/enquadramento", body, {
+    timeout: 8_000,
+  });
+  return data;
+}
+
+/**
+ * Anota que a leitura foi descartada, e por quê.
+ *
+ * É o único exemplo negativo de captura que este fluxo produz: aplicar e corrigir dizem o
+ * que o OCR errou, descartar diz que a FOTO não servia. Sem isso o corpus só acumula fotos
+ * que deram certo, e um corpus assim não ensina a reconhecer uma foto ruim.
+ *
+ * Nunca rejeita: é telemetria disparada no fecho do modal, e falhar aqui só faria o
+ * usuário levar um erro por ter cancelado.
+ */
+export async function registrarDescarteLeitura(
+  leituraId: number,
+  motivo: MahuMotivoDescarte | null,
+  msNaConferencia: number,
+): Promise<void> {
+  try {
+    await http.post(`/mahu/leitura/${leituraId}/desfecho`, {
+      motivo,
+      ms_na_conferencia: msNaConferencia,
+    });
+  } catch {
+    // Telemetria perdida não é problema do usuário.
+  }
 }
 
 /**

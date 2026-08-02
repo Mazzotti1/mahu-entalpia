@@ -194,6 +194,60 @@ class MahuAviso(BaseModel):
     campos: list[str]
 
 
+class MahuQualidadeResponse(BaseModel):
+    """Como a foto foi tirada. Vai ao cliente para virar instrução na próxima captura.
+
+    Tudo opcional: quando o gabarito não casa não há geometria de onde derivar
+    enquadramento, e devolver zero seria mentir que a foto estava de frente.
+    """
+
+    # 'homografia' | 'quadrilatero' | 'resize', em ordem decrescente de confiabilidade.
+    align_metodo: str
+    align_inliers: int | None = None
+    # Em pixels do espaço canônico (1200x480), o mesmo das ROIs.
+    align_erro_reproj: float | None = None
+    # Pior erro local entre os campos — denuncia o bloco que derivou sozinho.
+    align_erro_reproj_pior: float | None = None
+    nitidez: float | None = None
+    reflexo: float | None = None
+    preenchimento: float | None = None
+    inclinacao_graus: float | None = None
+    # Altura de um dígito em pixels DA FOTO ORIGINAL: a resolução que o OCR de fato teve.
+    px_por_digito: float | None = None
+
+
+class MahuEnquadramentoResponse(BaseModel):
+    """Veredito sobre um quadro da câmera, antes de qualquer leitura.
+
+    Uma instrução por vez, e não uma lista: o vetor pode acusar quatro problemas ao mesmo
+    tempo, e mostrar os quatro não guia ninguém — vira uma lista de reclamações que a pessoa
+    lê e ignora. Corrigido o pior, o próximo aparece sozinho no quadro seguinte.
+    """
+
+    pronto: bool
+    # Texto exibível. `None` quando está tudo bem.
+    instrucao: str | None = None
+    # Identificador estável do problema, para o cliente não comparar texto.
+    codigo: str | None = None
+    qualidade: MahuQualidadeResponse
+
+
+class MahuDesfechoInput(BaseModel):
+    """O que o usuário fez com a leitura, quando não foi aplicá-la.
+
+    Existe porque descartar é o rótulo mais forte de foto ruim que este fluxo produz, e até
+    aqui ele morria no cliente.
+    """
+
+    motivo: Literal["borrada", "reflexo", "cortada", "leu_errado", "outro"] | None = None
+    # Tempo com a conferência aberta. Distingue conferir de carimbar.
+    ms_na_conferencia: int | None = Field(default=None, ge=0)
+    # Id da leitura que substituiu esta, quando o usuário refotografou. O par
+    # (tentativa ruim, tentativa boa) da mesma tela é o exemplo mais informativo que existe
+    # para o modelo de qualidade: só a foto muda.
+    substituida_por: int | None = None
+
+
 class MahuLeituraResponse(BaseModel):
     # Identifica a leitura na telemetria; volta em MahuCamposInput.leitura_id para o
     # backend saber a quais sugestões os valores aplicados correspondem.
@@ -205,6 +259,8 @@ class MahuLeituraResponse(BaseModel):
     # todos os campos parecem bons isoladamente mas não fecham entre si.
     requires_review: bool
     avisos: list[MahuAviso] = []
+    # Como a foto foi tirada. `None` só nas leituras gravadas antes da migração 4.
+    qualidade: MahuQualidadeResponse | None = None
 
 
 class MahuCamposInput(BaseModel):
@@ -216,6 +272,16 @@ class MahuCamposInput(BaseModel):
     tt06: float = Field(ge=-10.0, le=60.0)
     mt07: float = Field(ge=0.0, le=100.0)
     tt07: float = Field(ge=-10.0, le=60.0)
+    # Opcionais porque o painel os mostra num bloco de 3 linhas com 17 px entre SP, PV e MV:
+    # é o recorte mais arriscado da tela, e uma leitura que falhe neles não pode derrubar as
+    # outras seis. Presentes, viram desvio contra o processo e entram no corpus como
+    # qualquer outro campo — que é o que faltava para O6.4.
+    umd_abs_pv: float | None = Field(default=None, ge=0.0, le=30.0)
+    tt04_entalpia_pv: float | None = Field(default=None, ge=0.0, le=120.0)
     # Liga o que foi aplicado ao que tinha sido sugerido. Ausente quando os valores foram
     # digitados sem uma leitura de OCR por trás.
     leitura_id: int | None = None
+    # Tempo com a conferência aberta antes de aplicar. Ver `registrar_aplicacao`: é o que
+    # separa "conferiu e aceitou" de "carimbou sem olhar", e as duas coisas não podem valer
+    # como o mesmo rótulo no corpus.
+    ms_na_conferencia: int | None = Field(default=None, ge=0)

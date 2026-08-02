@@ -3,7 +3,28 @@ import { useState, type FormEvent } from "react";
 import { ActionButton } from "@/components/ui/ActionButton";
 import { formatarConfianca } from "@/lib/format";
 import { useMahuStore } from "@/store/useMahuStore";
-import type { MahuCampoOCR, MahuCampoStatus, MahuLeituraResponse } from "@/types/api";
+import type {
+  MahuCampoOCR,
+  MahuCampoStatus,
+  MahuLeituraResponse,
+  MahuMotivoDescarte,
+} from "@/types/api";
+
+/**
+ * O descarte pergunta o motivo porque é o único ponto do fluxo em que o usuário sabe algo
+ * que nem o OCR nem os validadores conseguem descobrir: se a FOTO estava ruim, e como.
+ * Aplicar e corrigir já rotulam o reconhecimento; nada rotulava a captura.
+ *
+ * `leu_errado` é separado dos três primeiros de propósito: foto boa com leitura ruim é um
+ * problema de reconhecimento, e deixá-lo puxar os limiares de captura ensinaria o guia da
+ * câmera a reclamar de fotos que estavam certas.
+ */
+const MOTIVOS: ReadonlyArray<{ valor: MahuMotivoDescarte; rotulo: string }> = [
+  { valor: "borrada", rotulo: "Borrada" },
+  { valor: "reflexo", rotulo: "Reflexo" },
+  { valor: "cortada", rotulo: "Cortada" },
+  { valor: "leu_errado", rotulo: "Leu errado" },
+];
 
 const ESTILO_INPUT: Record<MahuCampoStatus, string> = {
   ok: "border-slate-300",
@@ -36,9 +57,13 @@ interface MahuReviewFormProps {
 
 /**
  * Conferência da leitura de OCR. Aparece em TODA leitura, inclusive nas que saíram
- * inteiramente confiáveis — ver `useMahuStore.lerImagem`. Só os campos obrigatórios são
- * editáveis: os informativos (`PID UMD ABS PV`, `PID TT04 ENTALPIA PV`) não entram no
- * cálculo dos pontos.
+ * inteiramente confiáveis — ver `useMahuStore.lerImagem`.
+ *
+ * Todos os campos são editáveis, incluindo `PID UMD ABS PV` e `PID TT04 ENTALPIA PV`. Eles
+ * eram exibidos desabilitados, e por isso nunca produziam o par sugerido/aplicado — ficavam
+ * de fora do corpus e não podiam ser medidos nem afinados. A diferença que sobrou é que
+ * deixá-los vazios não trava o envio: o bloco SP/PV/MV do painel tem 17 px entre linhas e
+ * nem toda foto o resolve.
  *
  * O componente é remontado a cada leitura (via `key` no pai), então o estado inicial
  * vindo do OCR não precisa de sincronização por efeito.
@@ -52,20 +77,26 @@ export function MahuReviewForm({ leitura }: MahuReviewFormProps) {
     Object.fromEntries(leitura.campos.map((campo) => [campo.key, campo.pv?.toString() ?? ""])),
   );
   const [erro, setErro] = useState<string | null>(null);
+  // O primeiro toque em "Descartar" abre os motivos em vez de fechar. Um clique a mais,
+  // mas é o único rótulo de foto ruim que este fluxo produz — e sem ele o corpus só
+  // acumula fotos que deram certo.
+  const [perguntandoMotivo, setPerguntandoMotivo] = useState(false);
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
 
     const numericos: Record<string, number> = {};
     for (const campo of leitura.campos) {
-      if (!campo.obrigatorio) {
-        continue;
-      }
       const bruto = valores[campo.key]?.trim() ?? "";
       const numero = Number(bruto);
       if (bruto === "" || Number.isNaN(numero)) {
-        setErro(`Preencha um valor numérico para ${campo.label}.`);
-        return;
+        // Vazio nos campos do bloco SP/PV/MV é resultado normal: nem toda foto os resolve,
+        // e o backend os aceita ausentes. Só os obrigatórios travam o envio.
+        if (campo.obrigatorio) {
+          setErro(`Preencha um valor numérico para ${campo.label}.`);
+          return;
+        }
+        continue;
       }
       numericos[campo.key] = numero;
     }
@@ -126,11 +157,10 @@ export function MahuReviewForm({ leitura }: MahuReviewFormProps) {
             inputMode="decimal"
             value={valores[campo.key] ?? ""}
             required={campo.obrigatorio}
-            disabled={!campo.obrigatorio}
             onChange={(event) =>
               setValores((atual) => ({ ...atual, [campo.key]: event.target.value }))
             }
-            className={`w-full rounded-md border px-1.5 py-1 text-right disabled:bg-slate-100 disabled:text-slate-500 ${
+            className={`w-full rounded-md border px-1.5 py-1 text-right ${
               camposComAviso.has(campo.key)
                 ? "border-rose-600 bg-rose-50"
                 : ESTILO_INPUT[campo.status]
@@ -151,14 +181,50 @@ export function MahuReviewForm({ leitura }: MahuReviewFormProps) {
       <ActionButton type="submit" className="mt-2 w-full" disabled={aplicando}>
         {aplicando ? "Aplicando..." : tudoConfiavel ? "Aceitar e aplicar" : "Aplicar à carta"}
       </ActionButton>
-      <ActionButton
-        variante="ghost"
-        className="mt-2 w-full"
-        onClick={descartarLeitura}
-        disabled={aplicando}
-      >
-        Descartar leitura
-      </ActionButton>
+      {perguntandoMotivo ? (
+        <div className="mt-2 rounded-md border border-slate-300 bg-slate-50 p-2">
+          <p className="mb-1.5 text-[12px] text-slate-700">O que houve com esta leitura?</p>
+          <div className="grid grid-cols-2 gap-1.5">
+            {MOTIVOS.map(({ valor, rotulo }) => (
+              <ActionButton
+                key={valor}
+                variante="ghost"
+                className="text-[12px]"
+                onClick={() => descartarLeitura(valor)}
+              >
+                {rotulo}
+              </ActionButton>
+            ))}
+          </div>
+          <div className="mt-1.5 flex gap-1.5">
+            {/* Sair sem responder continua descartando: obrigar a escolher trocaria um
+                rótulo ausente por um rótulo chutado, que é pior para o corpus. */}
+            <ActionButton
+              variante="ghost"
+              className="flex-1 text-[12px]"
+              onClick={() => descartarLeitura(null)}
+            >
+              Só descartar
+            </ActionButton>
+            <ActionButton
+              variante="ghost"
+              className="flex-1 text-[12px]"
+              onClick={() => setPerguntandoMotivo(false)}
+            >
+              Voltar
+            </ActionButton>
+          </div>
+        </div>
+      ) : (
+        <ActionButton
+          variante="ghost"
+          className="mt-2 w-full"
+          onClick={() => setPerguntandoMotivo(true)}
+          disabled={aplicando}
+        >
+          Descartar leitura
+        </ActionButton>
+      )}
     </form>
   );
 }

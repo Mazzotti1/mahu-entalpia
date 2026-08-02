@@ -12,7 +12,10 @@ from backend.database import get_db
 from backend.models import (
     MahuAviso,
     MahuCamposInput,
+    MahuDesfechoInput,
+    MahuEnquadramentoResponse,
     MahuLeituraResponse,
+    MahuQualidadeResponse,
     PontoInput,
     PontoResponse,
     SimulacaoInput,
@@ -20,13 +23,16 @@ from backend.models import (
     SimulacaoResponse,
     SimulacaoResumo,
 )
+from backend.services.armazenamento_perfil import ler_limiares_captura
 from backend.services.eventos import difusor
+from backend.services.guia_captura import avaliar as avaliar_captura
 from backend.services.mahu import construir_simulacao
-from backend.services.mahu_campos import CAMPOS_OBRIGATORIOS
+from backend.services.mahu_campos import CAMPOS_CONFERIVEIS
 from backend.services.mahu_validacao import validar_leitura
 from backend.services.psicrometria import calcular_ponto
 from backend.services.telemetria_ocr import (
     registrar_aplicacao,
+    registrar_descarte,
     registrar_leitura,
     ultima_leitura_aplicada,
 )
@@ -370,8 +376,17 @@ async def ler_mahu_endpoint(image: UploadFile = File(...)) -> MahuLeituraRespons
         any(campo.obrigatorio and campo.status != "ok" for campo in campos) or bool(avisos)
     )
 
+    alinhamento = leitura["alinhamento"]
+    qualidade = leitura["qualidade"]
+
     leitura_id = await registrar_leitura(
-        campos, requires_review=requires_review, avisos=avisos, image_bytes=image_bytes
+        campos,
+        requires_review=requires_review,
+        avisos=avisos,
+        image_bytes=image_bytes,
+        alinhamento=alinhamento,
+        qualidade=qualidade,
+        perfil_id=leitura["perfil_id"],
     )
 
     return MahuLeituraResponse(
@@ -380,7 +395,85 @@ async def ler_mahu_endpoint(image: UploadFile = File(...)) -> MahuLeituraRespons
         missing_keys=leitura["missing_keys"],
         requires_review=requires_review,
         avisos=[MahuAviso(**asdict(aviso)) for aviso in avisos],
+        qualidade=MahuQualidadeResponse(
+            align_metodo=alinhamento.metodo,
+            align_inliers=alinhamento.inliers,
+            align_erro_reproj=alinhamento.erro_reproj,
+            align_erro_reproj_pior=alinhamento.erro_reproj_pior,
+            **asdict(qualidade),
+        ),
     )
+
+
+@router.post("/mahu/enquadramento", response_model=MahuEnquadramentoResponse)
+async def avaliar_enquadramento(image: UploadFile = File(...)) -> MahuEnquadramentoResponse:
+    """Diz o que corrigir no enquadramento, sem ler número nenhum.
+
+    Serve a dois momentos. Ao vivo, a câmera manda um quadro pequeno de tempos em tempos e
+    mostra a instrução — o usuário corrige o ângulo ANTES de tirar a foto. No disparo, o
+    mesmo endpoint é o pré-voo: recusar aqui custa um quadro de 40 KB, enquanto descobrir o
+    problema depois custa subir 5 MB e esperar o OCR para então pedir outra foto.
+
+    Sem OCR de propósito (`medir_captura`, não `ler_mahu`): o que muda a instrução é a
+    geometria, e ela sai do casamento com o gabarito. Ler os números a cada segundo custaria
+    mais CPU que todas as leituras do dia.
+    """
+    if image.content_type is None or not image.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="Envie um arquivo de imagem válido.")
+
+    image_bytes = await image.read()
+    if not image_bytes:
+        raise HTTPException(status_code=400, detail="A imagem enviada está vazia.")
+    if len(image_bytes) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="Imagem acima do limite.")
+
+    try:
+        from backend.services.mahu_ocr import medir_captura
+
+        alinhamento, qualidade = await run_in_threadpool(medir_captura, image_bytes)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ImportError as exc:
+        raise HTTPException(status_code=503, detail="Motor de visão indisponível.") from exc
+
+    veredito = avaliar_captura(qualidade, alinhamento, await ler_limiares_captura())
+
+    return MahuEnquadramentoResponse(
+        pronto=veredito.pronto,
+        instrucao=veredito.instrucao,
+        codigo=veredito.codigo,
+        qualidade=MahuQualidadeResponse(
+            align_metodo=alinhamento.metodo,
+            align_inliers=alinhamento.inliers,
+            align_erro_reproj=alinhamento.erro_reproj,
+            align_erro_reproj_pior=alinhamento.erro_reproj_pior,
+            **asdict(qualidade),
+        ),
+    )
+
+
+@router.post("/mahu/leitura/{leitura_id}/desfecho", status_code=204)
+async def registrar_desfecho_endpoint(leitura_id: int, desfecho: MahuDesfechoInput) -> None:
+    """Anota que a leitura foi descartada, e por quê.
+
+    Aplicar já é registrado por `/mahu/processo`. O que faltava era o outro lado: a leitura
+    que o usuário joga fora hoje desaparece no cliente e fica marcada como pendente para
+    sempre, misturada com quem fechou a aba no meio. Descartar é o único exemplo negativo
+    de captura que este fluxo gera — sem ele o corpus só tem fotos que deram certo, e um
+    corpus assim não ensina a reconhecer uma foto ruim.
+
+    204 mesmo quando o id não existe ou já tinha desfecho: é telemetria disparada no fecho
+    do modal, e não pode virar erro na cara de quem só quis cancelar.
+    """
+    try:
+        await registrar_descarte(
+            leitura_id,
+            motivo=desfecho.motivo,
+            ms_na_conferencia=desfecho.ms_na_conferencia,
+            substituida_por=desfecho.substituida_por,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/mahu/simulacao", response_model=SimulacaoResponse)
@@ -395,8 +488,17 @@ async def criar_simulacao_mahu(campos: MahuCamposInput) -> SimulacaoResponse:
     """
     origem = "manual"
     if campos.leitura_id is not None:
-        aplicados = {key: getattr(campos, key) for key in CAMPOS_OBRIGATORIOS}
-        origem = await registrar_aplicacao(campos.leitura_id, aplicados)
+        # Os campos do bloco SP/PV/MV podem vir nulos: o painel os mostra com 17 px entre
+        # linhas e nem toda foto os resolve. Filtrar aqui é o que permite eles entrarem no
+        # corpus quando existem sem estragar o par sugerido/aplicado quando não existem.
+        aplicados = {
+            key: valor
+            for key in CAMPOS_CONFERIVEIS
+            if (valor := getattr(campos, key, None)) is not None
+        }
+        origem = await registrar_aplicacao(
+            campos.leitura_id, aplicados, ms_na_conferencia=campos.ms_na_conferencia
+        )
 
     return await persistir_simulacao(
         construir_simulacao(campos), origem=origem, leitura_id=campos.leitura_id

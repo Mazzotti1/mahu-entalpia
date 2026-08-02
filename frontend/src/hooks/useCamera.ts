@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { describeError } from "@/lib/http";
+import { avaliarEnquadramento } from "@/services/psicrometriaApi";
+import type { MahuEnquadramento } from "@/types/api";
 
 /**
  * A tela do MAHU é bem apaisada: o gabarito do backend é 1200x480, ou seja 2,5:1
@@ -34,11 +36,26 @@ function zerarZoom(track: MediaStreamTrack): void {
     });
 }
 
+/**
+ * Cadência do guia ao vivo. Curto o bastante para a instrução acompanhar o movimento do
+ * celular, longo o bastante para o servidor não ficar casando SIFT sem parar — e para a
+ * pessoa ter tempo de reagir antes da instrução mudar.
+ */
+const INTERVALO_GUIA_MS = 1200;
+
+/**
+ * Largura do quadro mandado ao guia. O casamento acontece a 1200 px no backend, então mais
+ * que isto é desperdício de upload; menos começa a perder os keypoints do desenho do painel.
+ */
+const LARGURA_GUIA = 960;
+
 export interface UseCameraResult {
   videoRef: React.RefObject<HTMLVideoElement | null>;
   dica: string;
   /** Mensagem quando a câmera não pôde ser aberta; nesse caso resta o seletor de arquivo. */
   indisponivel: string | null;
+  /** Último veredito do guia; `null` enquanto o primeiro quadro não voltou. */
+  enquadramento: MahuEnquadramento | null;
   capturar: () => Promise<File | null>;
 }
 
@@ -51,6 +68,7 @@ export function useCamera(ativo: boolean): UseCameraResult {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [dica, setDica] = useState(DICA_PADRAO);
   const [indisponivel, setIndisponivel] = useState<string | null>(null);
+  const [enquadramento, setEnquadramento] = useState<MahuEnquadramento | null>(null);
 
   useEffect(() => {
     if (!ativo) {
@@ -106,27 +124,83 @@ export function useCamera(ativo: boolean): UseCameraResult {
     };
   }, [ativo]);
 
+  // Guia ao vivo: manda um quadro reduzido de tempos em tempos e mostra o que corrigir.
+  // Corrigir o ângulo ANTES de disparar é a alavanca de precisão mais barata que existe
+  // aqui — a foto ruim custa 5 MB de upload, ~20 s de OCR e uma conferência inteira para
+  // depois virar descarte.
+  useEffect(() => {
+    if (!ativo) {
+      setEnquadramento(null);
+      return;
+    }
+
+    let cancelado = false;
+    // Uma requisição por vez. Sem isso, um servidor lento acumularia quadros em voo e as
+    // instruções chegariam fora de ordem, descrevendo um enquadramento que já passou.
+    let emVoo = false;
+
+    const medir = async () => {
+      if (emVoo || cancelado) {
+        return;
+      }
+      const quadro = await capturarQuadro(videoRef.current, LARGURA_GUIA, 0.6);
+      if (!quadro || cancelado) {
+        return;
+      }
+      emVoo = true;
+      try {
+        const veredito = await avaliarEnquadramento(quadro);
+        if (!cancelado) {
+          setEnquadramento(veredito);
+        }
+      } catch {
+        // Guia é auxílio, não requisito: sem rede, a moldura e a dica de texto continuam.
+      } finally {
+        emVoo = false;
+      }
+    };
+
+    const relogio = window.setInterval(() => void medir(), INTERVALO_GUIA_MS);
+    return () => {
+      cancelado = true;
+      window.clearInterval(relogio);
+    };
+  }, [ativo]);
+
   const capturar = useCallback(async (): Promise<File | null> => {
     const video = videoRef.current;
     if (!video?.videoWidth || !video.videoHeight) {
       setDica("Aguarde a câmera iniciar antes de capturar.");
       return null;
     }
-
-    const quadro = document.createElement("canvas");
-    quadro.width = video.videoWidth;
-    quadro.height = video.videoHeight;
-    quadro.getContext("2d")?.drawImage(video, 0, 0, quadro.width, quadro.height);
-
-    const blob = await new Promise<Blob | null>((resolve) => {
-      quadro.toBlob(resolve, "image/jpeg", 0.92);
-    });
-    if (!blob) {
+    const arquivo = await capturarQuadro(video, video.videoWidth, 0.92);
+    if (!arquivo) {
       setDica("Falha ao capturar o quadro da câmera.");
-      return null;
     }
-    return new File([blob], "mahu.jpg", { type: "image/jpeg" });
+    return arquivo;
   }, []);
 
-  return { videoRef, dica, indisponivel, capturar };
+  return { videoRef, dica, indisponivel, enquadramento, capturar };
+}
+
+/** Quadro atual do vídeo como JPEG, redimensionado para `largura`. */
+async function capturarQuadro(
+  video: HTMLVideoElement | null,
+  largura: number,
+  qualidade: number,
+): Promise<File | null> {
+  if (!video?.videoWidth || !video.videoHeight) {
+    return null;
+  }
+
+  const escala = Math.min(1, largura / video.videoWidth);
+  const quadro = document.createElement("canvas");
+  quadro.width = Math.round(video.videoWidth * escala);
+  quadro.height = Math.round(video.videoHeight * escala);
+  quadro.getContext("2d")?.drawImage(video, 0, 0, quadro.width, quadro.height);
+
+  const blob = await new Promise<Blob | null>((resolve) => {
+    quadro.toBlob(resolve, "image/jpeg", qualidade);
+  });
+  return blob ? new File([blob], "mahu.jpg", { type: "image/jpeg" }) : null;
 }

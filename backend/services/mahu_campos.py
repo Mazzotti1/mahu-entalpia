@@ -57,7 +57,16 @@ CAMPOS: list[Campo] = [
     Campo("tt06", "TT_06", "°C", 1, (-10.0, 60.0), (7.0, 11.0), True),
     Campo("mt07", "MT07", "%", 2, (0.0, 100.0), (43.0, 58.0), True),
     Campo("tt07", "TT07", "°C", 2, (-10.0, 60.0), (17.0, 23.0), True),
-    # Informativos: servem de conferência, não entram no cálculo dos pontos.
+    # `obrigatorio=False` não quer mais dizer "descartável": desde O6.4 os dois são
+    # conferidos, persistidos e comparados com o processo (services/desvios.py). O que a
+    # marca significa é que a AUSÊNCIA deles não bloqueia a leitura — o bloco SP/PV/MV com
+    # 17 px entre linhas é o recorte mais arriscado da tela, e falhar nele não pode
+    # invalidar os seis campos que saíram bem.
+    #
+    # Decisão B (§4, fechada em 02/08/2026) resolveu o que eles significam: SP calcula, PV
+    # vira desvio. Então nenhum dos dois DEFINE ponto — `entalpia_alvo` continua vindo dos
+    # setpoints. O que O6.4 entrega é o par sugerido/aplicado destes campos, que é o que
+    # faltava para o afinador poder medi-los.
     # PID UMD ABS PV descreve o mesmo estado que MT07/TT07 (7,30 g/kg <-> ~46,5% a 21,2 °C),
     # mas fica num bloco de 3 linhas com 17 px entre SP, PV e MV: a folga necessária para
     # tolerar o erro da retificação invade a linha vizinha e o OCR passaria a poder ler o
@@ -120,3 +129,7 @@ CAMPOS = aplicar_faixas_do_ambiente(CAMPOS)
 
 CAMPOS_POR_KEY = {campo.key: campo for campo in CAMPOS}
 CAMPOS_OBRIGATORIOS = [campo.key for campo in CAMPOS if campo.obrigatorio]
+# Tudo que o usuário confere e que volta ao backend — inclui os do bloco SP/PV/MV, que são
+# opcionais no payload mas não descartáveis. É esta lista, e não a de obrigatórios, que
+# define o que entra no corpus e o que vira desvio.
+CAMPOS_CONFERIVEIS = [campo.key for campo in CAMPOS]

@@ -1,14 +1,22 @@
 import { create } from "zustand";
 
 import { describeError } from "@/lib/http";
-import { calcularProcessoMahu, lerMahuMonitor } from "@/services/psicrometriaApi";
+import {
+  calcularProcessoMahu,
+  lerMahuMonitor,
+  registrarDescarteLeitura,
+} from "@/services/psicrometriaApi";
 import { useHistoricoStore } from "@/store/useHistoricoStore";
 import { useProcessoStore } from "@/store/useProcessoStore";
-import type { MahuCamposInput, MahuLeituraResponse } from "@/types/api";
+import type {
+  MahuCamposInput,
+  MahuLeituraResponse,
+  MahuMotivoDescarte,
+} from "@/types/api";
 
 const STATUS_INICIAL = "Fotografe o monitor para atualizar os pontos automaticamente.";
 
-/** Únicos campos que alimentam o cálculo; os demais do painel são só conferência. */
+/** Sem estes a leitura não pode ser aplicada — são eles que definem o ar de entrada. */
 const CHAVES_OBRIGATORIAS = [
   "mt_01",
   "tt01",
@@ -18,9 +26,20 @@ const CHAVES_OBRIGATORIAS = [
   "tt07",
 ] as const satisfies readonly (keyof MahuCamposInput)[];
 
+/**
+ * Conferidos e enviados, mas não exigidos. O bloco SP/PV/MV do painel tem 17 px entre
+ * linhas e nem toda foto o resolve; bloquear a leitura por causa dele desperdiçaria os seis
+ * campos que saíram bem. Quando vêm, viram desvio e entram no corpus como qualquer outro.
+ */
+const CHAVES_OPCIONAIS = [
+  "umd_abs_pv",
+  "tt04_entalpia_pv",
+] as const satisfies readonly (keyof MahuCamposInput)[];
+
 function montarCampos(
   valores: Record<string, number>,
   leituraId: number | null,
+  msNaConferencia: number,
 ): MahuCamposInput | null {
   if (CHAVES_OBRIGATORIAS.some((chave) => !Number.isFinite(valores[chave]))) {
     return null;
@@ -32,7 +51,14 @@ function montarCampos(
     tt06: valores.tt06,
     mt07: valores.mt07,
     tt07: valores.tt07,
+    ...Object.fromEntries(
+      CHAVES_OPCIONAIS.filter((chave) => Number.isFinite(valores[chave])).map((chave) => [
+        chave,
+        valores[chave],
+      ]),
+    ),
     leitura_id: leituraId,
+    ms_na_conferencia: msNaConferencia,
   };
 }
 
@@ -69,9 +95,15 @@ interface MahuState {
   leitura: MahuLeituraResponse | null;
   /** Muda a cada leitura para o formulário remontar com os novos valores. */
   leituraId: number;
+  /**
+   * Quando a conferência abriu, em epoch ms. O tempo até aplicar é o que distingue
+   * conferir de carimbar: aplicar em um segundo e meio sem corrigir nada não é evidência
+   * de que a leitura estava certa, e no corpus não pode valer como se fosse.
+   */
+  abertaEm: number;
 
   setStatus: (status: string) => void;
-  descartarLeitura: () => void;
+  descartarLeitura: (motivo: MahuMotivoDescarte | null) => void;
   lerImagem: (file: File) => Promise<void>;
   aplicarConferencia: (valores: Record<string, number>) => Promise<void>;
 }
@@ -85,10 +117,20 @@ export const useMahuStore = create<MahuState>((set, get) => ({
   segundosDecorridos: 0,
   leitura: null,
   leituraId: 0,
+  abertaEm: 0,
 
   setStatus: (status) => set({ status }),
 
-  descartarLeitura: () => set({ leitura: null }),
+  descartarLeitura: (motivo) => {
+    const { leitura, abertaEm } = get();
+    // A leitura descartada some da tela na hora; avisar o servidor é assíncrono e não pode
+    // atrasar isso. Antes esse evento morria aqui, e a foto ruim ficava marcada como
+    // pendente para sempre — indistinguível de quem fechou a aba no meio.
+    set({ leitura: null, status: STATUS_INICIAL });
+    if (leitura?.id != null) {
+      void registrarDescarteLeitura(leitura.id, motivo, Date.now() - abertaEm);
+    }
+  },
 
   lerImagem: async (file) => {
     set({
@@ -127,7 +169,12 @@ export const useMahuStore = create<MahuState>((set, get) => ({
       // por campo estava boa e nada pediu revisão (docs/especificacao-processo-mahu.md §8.4).
       // Como efeito colateral, toda leitura passa a produzir o par sugerido/aplicado, que é
       // o ground truth rotulado de que O5.3 precisa.
-      set({ leitura, leituraId: Date.now(), status: descreverLeitura(leitura) });
+      set({
+        leitura,
+        leituraId: Date.now(),
+        abertaEm: Date.now(),
+        status: descreverLeitura(leitura),
+      });
     } catch (error) {
       set({ status: `Falha na leitura MAHU: ${describeError(error)}` });
     } finally {
@@ -137,7 +184,11 @@ export const useMahuStore = create<MahuState>((set, get) => ({
   },
 
   aplicarConferencia: async (valores) => {
-    const campos = montarCampos(valores, get().leitura?.id ?? null);
+    const campos = montarCampos(
+      valores,
+      get().leitura?.id ?? null,
+      Date.now() - get().abertaEm,
+    );
     if (!campos) {
       set({ status: "Preencha todos os campos obrigatórios com valores numéricos." });
       return;
