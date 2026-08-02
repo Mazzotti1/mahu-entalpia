@@ -6,7 +6,7 @@ from typing import AsyncIterator
 
 from fastapi import APIRouter, File, Header, HTTPException, Query, UploadFile
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 
 from backend.database import get_db
 from backend.models import (
@@ -452,8 +452,18 @@ async def avaliar_enquadramento(image: UploadFile = File(...)) -> MahuEnquadrame
     )
 
 
-@router.post("/mahu/leitura/{leitura_id}/desfecho", status_code=204)
-async def registrar_desfecho_endpoint(leitura_id: int, desfecho: MahuDesfechoInput) -> None:
+@router.post(
+    "/mahu/leitura/{leitura_id}/desfecho",
+    status_code=204,
+    # `response_class` explícito, e a anotação de retorno é `Response` e não `None`: com
+    # `-> None` o FastAPI 0.115 monta um response_model a partir da anotação e recusa a rota
+    # no import, porque 204 não pode ter corpo. Versões mais novas tratam `None` como
+    # "sem corpo" e aceitam — foi por isso que só a imagem de produção quebrou.
+    response_class=Response,
+)
+async def registrar_desfecho_endpoint(
+    leitura_id: int, desfecho: MahuDesfechoInput
+) -> Response:
     """Anota que a leitura foi descartada, e por quê.
 
     Aplicar já é registrado por `/mahu/processo`. O que faltava era o outro lado: a leitura
@@ -474,6 +484,8 @@ async def registrar_desfecho_endpoint(leitura_id: int, desfecho: MahuDesfechoInp
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return Response(status_code=204)
 
 
 @router.post("/mahu/simulacao", response_model=SimulacaoResponse)

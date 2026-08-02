@@ -39,6 +39,56 @@ jobs:
       - name: Checar sintaxe do backend
         run: python -m compileall -q backend
 
+      # `compileall` só prova que o arquivo é Python válido. Meia dúzia de erros que
+      # derrubam a API acontecem no IMPORT, montando o router: rota com status 204 e corpo,
+      # dependência mal declarada, response_model impossível. Sem este passo eles só
+      # apareciam no health check, depois do deploy.
+      #
+      # Instala apenas as dependências leves e as versões FIXADAS. As pinadas importam: um
+      # `-> None` num endpoint 204 passa no FastAPI 0.141 e é recusado no 0.115, que é o que
+      # a imagem usa. OpenCV, easyocr e torch ficam de fora (~2 GB) — o código já os importa
+      # tarde exatamente para que a API suba sem eles, e o teste confirma essa proteção.
+      - name: Importar a API com as versões fixadas, sem OpenCV
+        run: |
+          python -m pip install -q \
+            "$(grep -i '^fastapi==' backend/requirements.txt)" \
+            "$(grep -i '^pydantic==' backend/requirements.txt)" \
+            "$(grep -i '^aiosqlite==' backend/requirements.txt)" \
+            "$(grep -i '^psychrolib==' backend/requirements.txt)" \
+            "$(grep -i '^python-multipart==' backend/requirements.txt)"
+          python - <<'PY'
+          import importlib, sys
+
+          class SemVisao:
+              """Faz cv2/easyocr/torch faltarem, como numa instalação incompleta."""
+
+              def find_spec(self, nome, caminho=None, alvo=None):
+                  if nome in ("cv2", "easyocr", "torch"):
+                      raise ImportError(f"{nome} indisponível de propósito neste teste")
+                  return None
+
+          sys.meta_path.insert(0, SemVisao())
+          app = importlib.import_module("backend.main").app
+          rotas = [r for r in app.routes if getattr(r, "path", "").startswith("/api")]
+          print(f"{len(rotas)} rotas de /api registradas sem OpenCV.")
+          assert rotas, "nenhuma rota registrada"
+          PY
+
+      - name: Conferir que as migrações aplicam num banco vazio
+        run: |
+          python - <<'PY'
+          import asyncio, os, tempfile
+
+          os.environ["CARTA_DB_PATH"] = os.path.join(tempfile.mkdtemp(), "ci.db")
+          from backend.database import init_db
+          from backend.migrations import MIGRACOES
+
+          versao = asyncio.run(init_db())
+          esperada = max(numero for numero, _ in MIGRACOES)
+          print(f"schema na versão {versao} (esperada {esperada})")
+          assert versao == esperada, "as migrações não chegaram à última versão"
+          PY
+
       - name: Validar os arquivos do compose
         run: |
           docker compose -f docker-compose.yml config -q
