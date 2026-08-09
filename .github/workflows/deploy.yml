@@ -110,10 +110,17 @@ jobs:
       - name: Validar os arquivos do compose
         run: |
           docker compose -f docker-compose.yml config -q
-          # O compose de produção referencia variáveis que só existem no .env da VPS.
+          # O compose de produção referencia variáveis que só existem no .env da VPS, que é
+          # ignorado pelo Git e portanto não existe aqui. Valores de mentira bastam: o passo
+          # só valida a sintaxe do YAML, não sobe nada.
+          #
+          # CARTA_JWT_SECRET entra por último e pelo mesmo motivo que os outros três. Ele usa
+          # `:?` no compose de propósito, para a VPS recusar subir sem segredo de verdade —
+          # e é justamente esse `:?` que derruba a interpolação aqui se ninguém der um valor.
           APP_DOMAIN=exemplo.com \
           LETSENCRYPT_EMAIL=ci@exemplo.com \
           NGINX_PROXY_NETWORK=proxy \
+          CARTA_JWT_SECRET=segredo-de-mentira-so-para-validar-o-yaml \
             docker compose -f docker-compose.server.yml config -q
 
       - name: Conferir que o gabarito do OCR está versionado
