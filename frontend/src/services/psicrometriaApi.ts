@@ -1,5 +1,6 @@
 import { http, isHttpStatus } from "@/lib/http";
 import type {
+  GastoTermicoHistoricoResponse,
   MahuCamposInput,
   MahuEnquadramento,
   MahuLeituraResponse,
@@ -136,6 +137,16 @@ export async function buscarProcessoDaSimulacao(id: number): Promise<ProcessoRes
     }
     throw error;
   }
+}
+
+/** Gasto térmico e Delta H de cada leitura, para o gráfico e a exportação em planilha. */
+export async function buscarHistoricoGastoTermico(
+  limite = 200,
+): Promise<GastoTermicoHistoricoResponse> {
+  const { data } = await http.get<GastoTermicoHistoricoResponse>("/mahu/historico/gasto-termico", {
+    params: { limite },
+  });
+  return data;
 }
 
 export async function buscarSetpoints(): Promise<Setpoints> {

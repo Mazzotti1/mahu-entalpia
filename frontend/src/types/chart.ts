@@ -1,4 +1,4 @@
-import type { EtapaProcesso, FonteCalculo } from "@/types/api";
+import type { EtapaProcesso, FonteCalculo, FontePonto } from "@/types/api";
 
 /**
  * Ponto do processo já normalizado para o desenho. `wKgKg` guarda kg/kg (a unidade das
@@ -15,6 +15,8 @@ export interface ProcessPoint {
   volumeEspecifico: number;
   pontoOrvalho: number;
   fonteCalculo: FonteCalculo;
+  /** Lido/digitado no painel (só P1) ou calculado a partir dos setpoints (P2..P5). */
+  fonte: FontePonto;
   saturado?: boolean;
 }
 

@@ -17,6 +17,9 @@ function toProcessPoint(ponto: SimulacaoResponse["pontos"][number]): ProcessPoin
     volumeEspecifico: ponto.volume_especifico,
     pontoOrvalho: ponto.ponto_orvalho,
     fonteCalculo: ponto.fonte_calculo,
+    // Simulação avulsa (histórico anterior ao processo encadeado): o ponto foi digitado à
+    // mão, seja qual for a fonte de cálculo interna (ur/entalpia/w_abs).
+    fonte: "lido_digitado",
   };
 }
 
@@ -105,6 +108,7 @@ export const useChartStore = create<ChartState>((set, get) => ({
       volumeEspecifico: ponto.volume_especifico,
       pontoOrvalho: ponto.ponto_orvalho,
       fonteCalculo: "w_abs",
+      fonte: ponto.fonte,
       saturado: ponto.saturado,
     }));
     set({

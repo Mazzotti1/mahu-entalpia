@@ -406,6 +406,36 @@ INSERT OR IGNORE INTO usuarios (username, senha_hash, papel)
 VALUES ('admin', '$2b$12$E.t/OVpIQ1mPFD6eNzFPDet3QMx1uSrK8rhSqV3wuFDTyyktNo712', 'admin');
 """
 
+# Os desvios do painel contra o processo, e o Delta H que fecha o par com o gasto térmico.
+#
+# `calcular_desvios` já existia, mas o resultado só viajava na resposta HTTP e morria com
+# ela: reabrir uma leitura do histórico (`ler_processo_por_simulacao`) não trazia de volta
+# TT_04, TT_06, TT07, MT07 nem o PID lido — a comparação com o setpoint ficava impossível
+# de auditar depois. `desvios_processo` grava o que `calcular_desvios` já calculava.
+#
+# `delta_h_entalpia` é a diferença pedida para o gráfico gasto térmico × Delta H: entalpia
+# do setpoint de P2 menos a entalpia lida/digitada no PID TT04 ENTALPIA (PV). Fica em
+# `processos` e não só em `desvios_processo` porque o histórico de gasto térmico lê essa
+# coluna direto, uma linha por leitura, sem precisar de JOIN para um único número.
+_V9_DESVIOS_E_DELTA_H = """
+ALTER TABLE processos ADD COLUMN delta_h_entalpia REAL;
+
+CREATE TABLE IF NOT EXISTS desvios_processo (
+    processo_id INTEGER NOT NULL,
+    campo TEXT NOT NULL,
+    ponto TEXT NOT NULL,
+    propriedade TEXT NOT NULL,
+    unidade TEXT NOT NULL,
+    medido REAL NOT NULL,
+    calculado REAL NOT NULL,
+    diferenca REAL NOT NULL,
+    PRIMARY KEY (processo_id, campo),
+    FOREIGN KEY (processo_id) REFERENCES processos(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_desvios_processo ON desvios_processo (processo_id);
+"""
+
 MIGRACOES: list[tuple[int, str]] = [
     (1, _V1_ESTRUTURA_INICIAL),
     (2, _V2_TELEMETRIA_OCR),
@@ -415,6 +445,7 @@ MIGRACOES: list[tuple[int, str]] = [
     (6, _V6_AVALIACOES_OCR),
     (7, _V7_VIGILANCIA_E_CAPTURA),
     (8, _V8_AUTENTICACAO),
+    (9, _V9_DESVIOS_E_DELTA_H),
 ]
 
 

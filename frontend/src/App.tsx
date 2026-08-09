@@ -1,5 +1,6 @@
 import { useState } from "react";
 
+import { GastoTermicoChart } from "@/components/GastoTermicoChart";
 import { HistoryPanel } from "@/components/HistoryPanel";
 import { IndicatorPanel } from "@/components/IndicatorPanel";
 import { LayerTogglesPanel } from "@/components/LayerTogglesPanel";
@@ -85,6 +86,7 @@ export default function App() {
         <PsychrometricChart />
         <ThermalLoadPanel />
         <PropertiesTable />
+        <GastoTermicoChart />
       </section>
     </main>
   );

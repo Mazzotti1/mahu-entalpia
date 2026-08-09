@@ -1,5 +1,9 @@
+import { useState } from "react";
+
+import { PontoPopup } from "@/components/PontoPopup";
 import { formatarNumero } from "@/lib/format";
 import { useChartStore } from "@/store/useChartStore";
+import { useProcessoStore } from "@/store/useProcessoStore";
 
 const COLUNAS = [
   "Ponto",
@@ -16,6 +20,10 @@ const COLUNAS = [
 
 export function PropertiesTable() {
   const points = useChartStore((state) => state.points);
+  const desvios = useProcessoStore((state) => state.processo?.desvios) ?? [];
+  const [selecionado, setSelecionado] = useState<string | null>(null);
+
+  const ponto = points.find((item) => item.nome === selecionado) ?? null;
 
   return (
     // Escondida no celular deitado: são 7 colunas por 5 linhas, ilegíveis em ~390px de
@@ -44,31 +52,36 @@ export function PropertiesTable() {
                 </td>
               </tr>
             ) : (
-              points.map((ponto) => (
-                <tr key={ponto.id ?? ponto.nome}>
+              points.map((item) => (
+                <tr
+                  key={item.id ?? item.nome}
+                  className="cursor-pointer hover:bg-slate-50"
+                  onClick={() => setSelecionado(item.nome)}
+                  title="Ver fonte (lido/digitado ou calculado) e conferência com o painel"
+                >
                   <td className="border border-gray-200 p-2 text-center font-semibold">
-                    {ponto.nome}
+                    {item.nome}
                   </td>
                   <td className="border border-gray-200 p-2 text-center tabular-nums">
-                    {formatarNumero(ponto.tbs, 2)}
+                    {formatarNumero(item.tbs, 2)}
                   </td>
                   <td className="border border-gray-200 p-2 text-center tabular-nums">
-                    {formatarNumero(ponto.wKgKg * 1000, 2)}
+                    {formatarNumero(item.wKgKg * 1000, 2)}
                   </td>
                   <td className="border border-gray-200 p-2 text-center tabular-nums">
-                    {formatarNumero(ponto.ur, 2)}
+                    {formatarNumero(item.ur, 2)}
                   </td>
                   <td className="border border-gray-200 p-2 text-center tabular-nums">
-                    {formatarNumero(ponto.entalpia, 2)}
+                    {formatarNumero(item.entalpia, 2)}
                   </td>
                   <td className="border border-gray-200 p-2 text-center tabular-nums">
-                    {formatarNumero(ponto.tbu, 2)}
+                    {formatarNumero(item.tbu, 2)}
                   </td>
                   <td className="border border-gray-200 p-2 text-center tabular-nums">
-                    {formatarNumero(ponto.pontoOrvalho, 2)}
+                    {formatarNumero(item.pontoOrvalho, 2)}
                   </td>
                   <td className="border border-gray-200 p-2 text-center tabular-nums">
-                    {formatarNumero(ponto.volumeEspecifico, 3)}
+                    {formatarNumero(item.volumeEspecifico, 3)}
                   </td>
                 </tr>
               ))
@@ -76,6 +89,14 @@ export function PropertiesTable() {
           </tbody>
         </table>
       </div>
+
+      {ponto && (
+        <PontoPopup
+          ponto={ponto}
+          desvios={desvios.filter((desvio) => desvio.ponto === ponto.nome)}
+          onFechar={() => setSelecionado(null)}
+        />
+      )}
     </section>
   );
 }

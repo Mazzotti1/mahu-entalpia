@@ -133,6 +133,11 @@ class PontoProcessoResponse(BaseModel):
     volume_especifico: float
     ponto_orvalho: float
     saturado: bool
+    # P1 vem de TT01+MT_01, lidos/digitados no painel. P2..P5 são derivados dos setpoints
+    # pela cadeia do processo (decisão B) — "calculado" mesmo quando um campo do painel
+    # (TT_04, TT_06, TT07, MT07, os PIDs) existe para conferir o mesmo estado; essa
+    # conferência aparece à parte, em `ProcessoResponse.desvios`.
+    fonte: Literal["lido_digitado", "calculado"]
 
 
 class EtapaResponse(BaseModel):
@@ -205,6 +210,26 @@ class ProcessoResponse(BaseModel):
     totais: TotaisProcessoResponse
     avisos: list[ProcessoAviso] = []
     desvios: list[DesvioResponse] = []
+    # Entalpia do setpoint de P2 menos a do PID TT04 ENTALPIA (PV) lido/digitado — o par que
+    # o gráfico de gasto térmico usa no eixo Delta H. `None` quando o campo não veio nesta
+    # leitura (é opcional no painel).
+    delta_h_entalpia: float | None = None
+
+
+class GastoTermicoHistoricoItem(BaseModel):
+    """Uma linha do histórico gasto térmico × Delta H, para o gráfico e a planilha."""
+
+    processo_id: int
+    simulacao_id: int
+    criado_em: str
+    q_aquecimento_kw: float
+    q_refrigeracao_kw: float
+    gasto_termico_kw: float
+    delta_h_entalpia: float | None = None
+
+
+class GastoTermicoHistoricoResponse(BaseModel):
+    itens: list[GastoTermicoHistoricoItem]
 
 
 class MahuAviso(BaseModel):

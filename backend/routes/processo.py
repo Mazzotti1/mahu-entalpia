@@ -9,7 +9,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 
 from backend.models import (
-    DesvioResponse,
+    GastoTermicoHistoricoResponse,
     MahuCamposInput,
     ProcessoInput,
     ProcessoResponse,
@@ -18,7 +18,7 @@ from backend.models import (
 )
 from backend.routes.pontos import persistir_simulacao
 from backend.services.autenticacao import Usuario
-from backend.services.desvios import calcular_desvios
+from backend.services.desvios import Desvio, calcular_desvios
 from backend.services.guardas import usuario_atual
 from backend.services.mahu_campos import CAMPOS_CONFERIVEIS
 from backend.services.telemetria_ocr import registrar_aplicacao
@@ -27,6 +27,7 @@ from backend.services.armazenamento_processo import (
     gravar_setpoints,
     ler_processo_por_simulacao,
     ler_setpoints,
+    listar_historico_gasto_termico,
     montar_response,
     para_dominio,
 )
@@ -108,6 +109,18 @@ async def obter_processo(simulacao_id: int) -> ProcessoResponse:
     return processo
 
 
+def _delta_h_entalpia(desvios: list[Desvio]) -> float | None:
+    """Entalpia do setpoint de P2 menos a lida/digitada no PID TT04 ENTALPIA (PV).
+
+    `Desvio.diferenca` é `medido - calculado`; Delta H é o oposto disso (setpoint menos
+    capturado), então o sinal inverte.
+    """
+    return next(
+        (-d.diferenca for d in desvios if d.campo == "tt04_entalpia_pv"),
+        None,
+    )
+
+
 @router.post("/mahu/processo", response_model=ProcessoResponse)
 async def calcular_processo_do_mahu(
     campos: MahuCamposInput, usuario: Usuario = Depends(usuario_atual)
@@ -126,16 +139,20 @@ async def calcular_processo_do_mahu(
     )
     balanco = calcular_balanco(processo)
 
+    medidos = {
+        key: valor
+        for key in CAMPOS_CONFERIVEIS
+        if (valor := getattr(campos, key, None)) is not None
+    }
+    desvios = calcular_desvios(processo, medidos)
+    delta_h_entalpia = _delta_h_entalpia(desvios)
+
     origem = "manual"
     if campos.leitura_id is not None:
         # Os campos do bloco SP/PV/MV podem vir nulos: o painel os mostra com 17 px entre
         # linhas e nem toda foto os resolve. Filtrar aqui é o que permite eles entrarem no
         # corpus quando existem sem estragar o par sugerido/aplicado quando não existem.
-        aplicados = {
-            key: valor
-            for key in CAMPOS_CONFERIVEIS
-            if (valor := getattr(campos, key, None)) is not None
-        }
+        aplicados = medidos
         origem = await registrar_aplicacao(
             campos.leitura_id, aplicados, ms_na_conferencia=campos.ms_na_conferencia
         )
@@ -146,26 +163,21 @@ async def calcular_processo_do_mahu(
         leitura_id=campos.leitura_id,
         usuario_id=usuario.id,
     )
-    processo_id = await gravar_processo(simulacao.id, processo, balanco)
-
-    resposta = montar_response(
-        processo, balanco, processo_id=processo_id, simulacao_id=simulacao.id
+    processo_id = await gravar_processo(
+        simulacao.id, processo, balanco, desvios=desvios, delta_h_entalpia=delta_h_entalpia
     )
-    medidos = {
-        key: valor
-        for key in CAMPOS_CONFERIVEIS
-        if (valor := getattr(campos, key, None)) is not None
-    }
-    resposta.desvios = [
-        DesvioResponse(
-            campo=d.campo,
-            ponto=d.ponto,
-            propriedade=d.propriedade,
-            unidade=d.unidade,
-            medido=round(d.medido, 2),
-            calculado=round(d.calculado, 2),
-            diferenca=round(d.diferenca, 2),
-        )
-        for d in calcular_desvios(processo, medidos)
-    ]
-    return resposta
+
+    return montar_response(
+        processo,
+        balanco,
+        processo_id=processo_id,
+        simulacao_id=simulacao.id,
+        desvios=desvios,
+        delta_h_entalpia=delta_h_entalpia,
+    )
+
+
+@router.get("/mahu/historico/gasto-termico", response_model=GastoTermicoHistoricoResponse)
+async def obter_historico_gasto_termico(limite: int = 200) -> GastoTermicoHistoricoResponse:
+    """Gasto térmico e Delta H de cada leitura, para o gráfico e a exportação em planilha."""
+    return GastoTermicoHistoricoResponse(itens=await listar_historico_gasto_termico(limite))

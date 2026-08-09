@@ -33,13 +33,19 @@ class Desvio:
 
 
 # campo do painel -> (ponto do processo, rótulo, unidade, como extrair do estado)
+#
+# Agrupamento por ponto (revisado): TT01+MT_01 definem P1 (fora desta lista, são entrada).
+# TT_04 e a entalpia do PID TT04 formam P2. TT_06 e a umidade absoluta do PID UMD ABS
+# formam P3 — os dois descrevem o mesmo estado, após a umidificação (docs
+# especificacao-processo-mahu.md, Parte I §1). Antes, `umd_abs_pv` comparava contra P5,
+# que é o ponto de TT07/MT07: agrupamento errado, corrigido aqui.
 _COMPARACOES: list[tuple[str, str, str, str, Callable[[Estado], float]]] = [
     ("tt04", "P2", "TBS", "°C", lambda e: e.tbs),
+    ("tt04_entalpia_pv", "P2", "h", "kJ/kg", lambda e: e.entalpia),
     ("tt06", "P3", "TBU", "°C", lambda e: e.tbu),
+    ("umd_abs_pv", "P3", "W", "g/kg", lambda e: e.w),
     ("tt07", "P5", "TBS", "°C", lambda e: e.tbs),
     ("mt07", "P5", "UR", "%", lambda e: e.ur),
-    ("umd_abs_pv", "P5", "W", "g/kg", lambda e: e.w),
-    ("tt04_entalpia_pv", "P2", "h", "kJ/kg", lambda e: e.entalpia),
 ]
 
 

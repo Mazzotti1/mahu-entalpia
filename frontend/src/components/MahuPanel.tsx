@@ -10,6 +10,9 @@ import { useMahuStore } from "@/store/useMahuStore";
 
 export function MahuPanel() {
   const arquivoRef = useRef<HTMLInputElement>(null);
+  // Input separado do de fallback da câmera: sem `capture`, para o seletor abrir o
+  // navegador de arquivos comum no PC em vez de tentar priorizar a câmera do celular.
+  const arquivoImportarRef = useRef<HTMLInputElement>(null);
   const [cameraAberta, setCameraAberta] = useState(false);
 
   const status = useMahuStore((state) => state.status);
@@ -23,6 +26,10 @@ export function MahuPanel() {
   const setStatus = useMahuStore((state) => state.setStatus);
 
   const escolherArquivo = useCallback(() => arquivoRef.current?.click(), []);
+  const escolherArquivoImportado = useCallback(
+    () => arquivoImportarRef.current?.click(),
+    [],
+  );
 
   /**
    * A tela do MAHU é 2,5:1: deitado, o painel preenche o quadro e os dígitos chegam ao OCR
@@ -72,11 +79,27 @@ export function MahuPanel() {
         {lendo ? "Lendo..." : "Capturar monitor MAHU"}
       </ActionButton>
 
+      <ActionButton
+        variante="ghost"
+        className="mt-2 w-full"
+        disabled={lendo}
+        onClick={escolherArquivoImportado}
+      >
+        Importar arquivo (print ou foto)
+      </ActionButton>
+
       <input
         ref={arquivoRef}
         type="file"
         accept="image/*"
         capture="environment"
+        hidden
+        onChange={handleArquivo}
+      />
+      <input
+        ref={arquivoImportarRef}
+        type="file"
+        accept="image/*"
         hidden
         onChange={handleArquivo}
       />

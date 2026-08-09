@@ -13,18 +13,25 @@ from dataclasses import asdict
 
 from backend.database import get_db
 from backend.models import (
+    DesvioResponse,
     EtapaResponse,
+    GastoTermicoHistoricoItem,
     PontoProcessoResponse,
     ProcessoAviso,
     ProcessoResponse,
     SetpointsInput,
     TotaisProcessoResponse,
 )
+from backend.services.desvios import Desvio
 from backend.services.energia import BalancoTermico
 from backend.services.processo import Processo, Setpoints
 from backend.services.psicrometria import Estado
 
 _CAMPOS_SETPOINTS = ("w_saida", "tbs_final", "entalpia_alvo", "vazao_m3h", "pressao_atm")
+
+# Só P1 vem direto do painel (TT01+MT_01); P2..P5 são a cadeia calculada dos setpoints
+# (decisão B). Ver o comentário de `PontoProcessoResponse.fonte`.
+_FONTE_POR_LABEL = {"P1": "lido_digitado"}
 
 
 def para_dominio(setpoints: SetpointsInput) -> Setpoints:
@@ -42,6 +49,7 @@ def ponto_para_response(label: str, estado: Estado) -> PontoProcessoResponse:
         volume_especifico=round(estado.volume_especifico, 4),
         ponto_orvalho=round(estado.ponto_orvalho, 2),
         saturado=estado.saturado,
+        fonte=_FONTE_POR_LABEL.get(label, "calculado"),
     )
 
 
@@ -51,6 +59,8 @@ def montar_response(
     *,
     processo_id: int | None = None,
     simulacao_id: int | None = None,
+    desvios: list[Desvio] | None = None,
+    delta_h_entalpia: float | None = None,
 ) -> ProcessoResponse:
     etapas = [
         EtapaResponse(
@@ -90,6 +100,19 @@ def montar_response(
             condensado_kg_h=round(balanco.condensado_kg_h, 2),
         ),
         avisos=[ProcessoAviso(codigo=a.codigo, mensagem=a.mensagem) for a in processo.avisos],
+        desvios=[
+            DesvioResponse(
+                campo=d.campo,
+                ponto=d.ponto,
+                propriedade=d.propriedade,
+                unidade=d.unidade,
+                medido=round(d.medido, 2),
+                calculado=round(d.calculado, 2),
+                diferenca=round(d.diferenca, 2),
+            )
+            for d in (desvios or [])
+        ],
+        delta_h_entalpia=round(delta_h_entalpia, 2) if delta_h_entalpia is not None else None,
     )
 
 
@@ -142,7 +165,8 @@ async def ler_processo_por_simulacao(simulacao_id: int) -> ProcessoResponse | No
     async with get_db() as db:
         cursor = await db.execute(
             f"""
-            SELECT id, {", ".join(_CAMPOS_SETPOINTS)}, {", ".join(_CAMPOS_TOTAIS)}, avisos
+            SELECT id, {", ".join(_CAMPOS_SETPOINTS)}, {", ".join(_CAMPOS_TOTAIS)}, avisos,
+                   delta_h_entalpia
             FROM processos WHERE simulacao_id = ? ORDER BY id DESC LIMIT 1
             """,
             (simulacao_id,),
@@ -170,6 +194,15 @@ async def ler_processo_por_simulacao(simulacao_id: int) -> ProcessoResponse | No
         )
         etapas = await cursor.fetchall()
 
+        cursor = await db.execute(
+            """
+            SELECT campo, ponto, propriedade, unidade, medido, calculado, diferenca
+            FROM desvios_processo WHERE processo_id = ?
+            """,
+            (cabecalho["id"],),
+        )
+        desvios = await cursor.fetchall()
+
     return ProcessoResponse(
         id=cabecalho["id"],
         simulacao_id=simulacao_id,
@@ -187,6 +220,7 @@ async def ler_processo_por_simulacao(simulacao_id: int) -> ProcessoResponse | No
                 # Saturado é o que está em cima da curva; a folga cobre o arredondamento
                 # de duas casas com que os valores foram gravados.
                 saturado=linha["ur_calculado"] >= 99.5,
+                fonte=_FONTE_POR_LABEL.get(linha["label"], "calculado"),
             )
             for linha in pontos
         ],
@@ -222,13 +256,31 @@ async def ler_processo_por_simulacao(simulacao_id: int) -> ProcessoResponse | No
             **{campo: round(cabecalho[campo], 4) for campo in _CAMPOS_TOTAIS}
         ),
         avisos=[ProcessoAviso(**a) for a in json.loads(cabecalho["avisos"] or "[]")],
+        desvios=[
+            DesvioResponse(
+                campo=linha["campo"],
+                ponto=linha["ponto"],
+                propriedade=linha["propriedade"],
+                unidade=linha["unidade"],
+                medido=linha["medido"],
+                calculado=linha["calculado"],
+                diferenca=linha["diferenca"],
+            )
+            for linha in desvios
+        ],
+        delta_h_entalpia=cabecalho["delta_h_entalpia"],
     )
 
 
 async def gravar_processo(
-    simulacao_id: int, processo: Processo, balanco: BalancoTermico
+    simulacao_id: int,
+    processo: Processo,
+    balanco: BalancoTermico,
+    *,
+    desvios: list[Desvio] | None = None,
+    delta_h_entalpia: float | None = None,
 ) -> int:
-    """Grava o processo e suas etapas, e devolve o id."""
+    """Grava o processo, suas etapas e os desvios do painel, e devolve o id."""
     setpoints = processo.setpoints
     async with get_db() as db:
         cursor = await db.execute(
@@ -236,8 +288,8 @@ async def gravar_processo(
             INSERT INTO processos (
                 simulacao_id, w_saida, tbs_final, entalpia_alvo, vazao_m3h, pressao_atm,
                 vazao_massica_kg_s, q_aquecimento_kw, q_refrigeracao_kw,
-                agua_umidificacao_kg_h, condensado_kg_h, avisos
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                agua_umidificacao_kg_h, condensado_kg_h, avisos, delta_h_entalpia
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 simulacao_id,
@@ -252,9 +304,32 @@ async def gravar_processo(
                 balanco.agua_umidificacao_kg_h,
                 balanco.condensado_kg_h,
                 json.dumps([asdict(a) for a in processo.avisos], ensure_ascii=False),
+                delta_h_entalpia,
             ),
         )
         processo_id = cursor.lastrowid
+
+        if desvios:
+            await db.executemany(
+                """
+                INSERT INTO desvios_processo (
+                    processo_id, campo, ponto, propriedade, unidade, medido, calculado, diferenca
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        processo_id,
+                        d.campo,
+                        d.ponto,
+                        d.propriedade,
+                        d.unidade,
+                        d.medido,
+                        d.calculado,
+                        d.diferenca,
+                    )
+                    for d in desvios
+                ],
+            )
 
         await db.executemany(
             """
@@ -285,5 +360,41 @@ async def gravar_processo(
             ],
         )
         await db.commit()
+
+    return processo_id
+
+
+async def listar_historico_gasto_termico(limite: int = 200) -> list[GastoTermicoHistoricoItem]:
+    """Uma linha por leitura: gasto térmico total e Delta H, para o gráfico e a planilha.
+
+    Não filtra por `delta_h_entalpia` nulo aqui: leituras sem o PID TT04 ENTALPIA (PV)
+    informado ainda têm gasto térmico e devem aparecer na planilha. Quem consome (gráfico)
+    é quem decide ignorar as linhas sem Delta H.
+    """
+    async with get_db() as db:
+        cursor = await db.execute(
+            """
+            SELECT id, simulacao_id, criado_em, q_aquecimento_kw, q_refrigeracao_kw,
+                   delta_h_entalpia
+            FROM processos
+            ORDER BY criado_em DESC, id DESC
+            LIMIT ?
+            """,
+            (limite,),
+        )
+        linhas = await cursor.fetchall()
+
+    return [
+        GastoTermicoHistoricoItem(
+            processo_id=linha["id"],
+            simulacao_id=linha["simulacao_id"],
+            criado_em=f"{linha['criado_em']}Z",
+            q_aquecimento_kw=linha["q_aquecimento_kw"],
+            q_refrigeracao_kw=linha["q_refrigeracao_kw"],
+            gasto_termico_kw=linha["q_aquecimento_kw"] + linha["q_refrigeracao_kw"],
+            delta_h_entalpia=linha["delta_h_entalpia"],
+        )
+        for linha in linhas
+    ]
 
     return processo_id

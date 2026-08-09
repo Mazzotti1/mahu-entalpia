@@ -113,6 +113,13 @@ export interface Setpoints {
   pressao_atm: number;
 }
 
+/**
+ * P1 vem de TT01+MT_01, lidos/digitados no painel. P2..P5 são a cadeia calculada a partir
+ * dos setpoints (decisão B) — "calculado" mesmo quando um campo do painel existe para
+ * conferir o mesmo estado; essa conferência é o que está em `ProcessoResponse.desvios`.
+ */
+export type FontePonto = "lido_digitado" | "calculado";
+
 export interface PontoProcesso {
   label: string;
   tbs: number;
@@ -124,6 +131,7 @@ export interface PontoProcesso {
   volume_especifico: number;
   ponto_orvalho: number;
   saturado: boolean;
+  fonte: FontePonto;
 }
 
 /**
@@ -187,6 +195,28 @@ export interface ProcessoResponse {
   totais: TotaisProcesso;
   avisos: ProcessoAviso[];
   desvios: Desvio[];
+  /**
+   * Entalpia do setpoint de P2 menos a do PID TT04 ENTALPIA (PV) lido/digitado — o par que
+   * o gráfico de gasto térmico usa no eixo Delta H. `null` quando o campo não veio na
+   * leitura (é opcional no painel).
+   */
+  delta_h_entalpia: number | null;
+}
+
+/** Uma linha do histórico gasto térmico × Delta H, para o gráfico e a planilha. */
+export interface GastoTermicoHistoricoItem {
+  processo_id: number;
+  simulacao_id: number;
+  /** ISO 8601 em UTC (com sufixo Z). */
+  criado_em: string;
+  q_aquecimento_kw: number;
+  q_refrigeracao_kw: number;
+  gasto_termico_kw: number;
+  delta_h_entalpia: number | null;
+}
+
+export interface GastoTermicoHistoricoResponse {
+  itens: GastoTermicoHistoricoItem[];
 }
 
 export interface ProcessoInput {
