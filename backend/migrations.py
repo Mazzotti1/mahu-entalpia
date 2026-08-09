@@ -335,6 +335,77 @@ CREATE TABLE IF NOT EXISTS limiares_captura (
 );
 """
 
+# Autenticação: quem entra, e sob qual sessão.
+#
+# A sessão é uma LINHA e não só um JWT porque JWT puro não sabe ser revogado: sair da conta
+# apenas apagaria o cookie do navegador, e uma cópia do token continuaria válida até expirar.
+# Com a linha, `revogada_em` derruba a sessão no instante seguinte, inclusive um SSE aberto.
+#
+# O refresh é guardado como sha256 e nunca em claro: vazar a tabela não pode entregar sessões
+# ativas. Não é bcrypt de propósito — são 32 bytes aleatórios, não há dicionário que os ataque,
+# e um bcrypt por renovação custaria centenas de milissegundos para não proteger nada a mais.
+#
+# `usuario_id` em `simulacoes` e `leituras_ocr` é nulo nas linhas antigas: elas foram gravadas
+# antes de existir login e não têm dono conhecido. Inventar um seria pior que admitir a lacuna.
+_V8_AUTENTICACAO = """
+CREATE TABLE IF NOT EXISTS usuarios (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    -- COLLATE NOCASE: o UNIQUE do SQLite é sensível a maiúsculas, então sem isto "Roberto"
+    -- e "roberto" seriam duas contas. NOCASE só dobra ASCII, o que basta porque o regex de
+    -- username em models.py já recusa qualquer coisa fora de [A-Za-z0-9._-].
+    username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    senha_hash TEXT NOT NULL,
+    papel TEXT NOT NULL DEFAULT 'operador',
+    ativo INTEGER NOT NULL DEFAULT 1,
+    criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    senha_atualizada_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    ultimo_login_em TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS sessoes (
+    -- uuid4. Viaja no claim `sid` do access token; é por ele que cada requisição confere
+    -- se a sessão ainda vale.
+    id TEXT PRIMARY KEY,
+    usuario_id INTEGER NOT NULL REFERENCES usuarios(id),
+    refresh_hash TEXT NOT NULL,
+    criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    -- Teto absoluto: mesmo renovando sem parar, a sessão morre aqui. Sem ele a rotação
+    -- eterna produz sessão imortal.
+    expira_em TIMESTAMP NOT NULL,
+    -- Alimenta o corte por ociosidade, que é outra coisa: mede tempo desde o último uso.
+    ultimo_uso_em TIMESTAMP,
+    revogada_em TIMESTAMP,
+    -- 'logout' | 'logout_global' | 'rotacao' | 'reuso_detectado' | 'senha_alterada'
+    motivo_revogacao TEXT,
+    -- Na rotação, aponta para a sessão que substituiu esta. É o que permite, ao ver um
+    -- refresh já rotacionado voltar, derrubar a cadeia inteira e não só o elo apresentado.
+    substituida_por TEXT REFERENCES sessoes(id),
+    user_agent TEXT,
+    ip TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_sessoes_usuario ON sessoes (usuario_id);
+CREATE INDEX IF NOT EXISTS idx_sessoes_expira ON sessoes (expira_em);
+
+ALTER TABLE simulacoes ADD COLUMN usuario_id INTEGER REFERENCES usuarios(id);
+ALTER TABLE leituras_ocr ADD COLUMN usuario_id INTEGER REFERENCES usuarios(id);
+
+-- Conta de instalação: admin / admin. Existe para o primeiro login ser possível num banco
+-- recém-criado, e para ser TROCADA logo em seguida:
+--
+--     python -m scripts.criar_usuario renomear admin <nome real>
+--     python -m scripts.criar_usuario senha <nome real>
+--
+-- Enquanto a senha continuar sendo 'admin', a API grita um aviso a cada subida
+-- (`avisar_credenciais_padrao`) — credencial padrão esquecida é como a maioria dos sistemas
+-- pequenos é invadida, e o aviso é o que impede o esquecimento de passar despercebido.
+--
+-- O hash é literal, e não gerado na subida, para que o valor seja o mesmo em qualquer
+-- máquina e a senha em claro não exista no código-fonte. bcrypt custo 12.
+INSERT OR IGNORE INTO usuarios (username, senha_hash, papel)
+VALUES ('admin', '$2b$12$E.t/OVpIQ1mPFD6eNzFPDet3QMx1uSrK8rhSqV3wuFDTyyktNo712', 'admin');
+"""
+
 MIGRACOES: list[tuple[int, str]] = [
     (1, _V1_ESTRUTURA_INICIAL),
     (2, _V2_TELEMETRIA_OCR),
@@ -343,6 +414,7 @@ MIGRACOES: list[tuple[int, str]] = [
     (5, _V5_PERFIS_OCR),
     (6, _V6_AVALIACOES_OCR),
     (7, _V7_VIGILANCIA_E_CAPTURA),
+    (8, _V8_AUTENTICACAO),
 ]
 
 

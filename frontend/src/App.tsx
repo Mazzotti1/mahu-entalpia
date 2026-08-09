@@ -8,6 +8,34 @@ import { PropertiesTable } from "@/components/PropertiesTable";
 import { PsychrometricChart } from "@/components/PsychrometricChart";
 import { SetpointsPanel } from "@/components/SetpointsPanel";
 import { ThermalLoadPanel } from "@/components/ThermalLoadPanel";
+import { useAuthStore } from "@/store/useAuthStore";
+
+/** Quem está logado e a saída. A autoria das leituras vai para o banco: convém saber sob
+ * qual conta se está gravando antes de fotografar o painel.
+ */
+function ContaAtual() {
+  const usuario = useAuthStore((state) => state.usuario);
+  const sair = useAuthStore((state) => state.sair);
+
+  if (!usuario) {
+    return null;
+  }
+
+  return (
+    <span className="flex shrink-0 items-baseline gap-2 text-xs text-gray-600">
+      <span className="truncate" title={usuario.username}>
+        {usuario.username}
+      </span>
+      <button
+        type="button"
+        onClick={() => void sair()}
+        className="cursor-pointer text-blue-700 underline"
+      >
+        Sair
+      </button>
+    </span>
+  );
+}
 
 /**
  * Dois modos, e a variante `paisagem` decide qual:
@@ -27,7 +55,10 @@ export default function App() {
           painelAberto ? "" : "paisagem:hidden"
         }`}
       >
-        <h1 className="mb-3 text-2xl font-semibold paisagem:text-lg">PSICROMETRIA</h1>
+        <div className="mb-3 flex items-baseline justify-between gap-2">
+          <h1 className="text-2xl font-semibold paisagem:text-lg">PSICROMETRIA</h1>
+          <ContaAtual />
+        </div>
         <MahuPanel />
         <SetpointsPanel />
         <HistoryPanel />

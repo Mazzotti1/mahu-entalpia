@@ -20,6 +20,10 @@ async def init_db() -> int:
     if diretorio:
         os.makedirs(diretorio, exist_ok=True)
     async with aiosqlite.connect(DB_PATH) as db:
+        # WAL é gravado no arquivo do banco, então uma vez basta e vale para toda conexão
+        # futura. Com ele um leitor deixa de bloquear o escritor — passa a importar agora
+        # que renovar a sessão escreve em `sessoes` no meio de qualquer outra requisição.
+        await db.execute("PRAGMA journal_mode = WAL")
         return await aplicar_migracoes(db)
 
 
@@ -27,6 +31,10 @@ async def init_db() -> int:
 async def get_db():
     db = await aiosqlite.connect(DB_PATH)
     db.row_factory = aiosqlite.Row
+    # O SQLite ignora FOREIGN KEY por padrão, e é por conexão: as chaves declaradas desde a
+    # migração 1 nunca foram aplicadas. Sem isto, `sessoes.usuario_id` apontando para um
+    # usuário apagado seria aceito em silêncio — e uma sessão órfã é uma sessão válida.
+    await db.execute("PRAGMA foreign_keys = ON")
     try:
         yield db
     finally:

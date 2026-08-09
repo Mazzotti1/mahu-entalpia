@@ -15,6 +15,10 @@ services:
       # Origens extras de CORS, separadas por vírgula. Só é preciso para quem chamar a API
       # direto; pelo nginx o frontend já está na mesma origem.
       CARTA_CORS_ORIGINS: "${CARTA_CORS_ORIGINS:-}"
+      # Opcional em desenvolvimento: sem valor, `seguranca.py` usa um segredo fixo de dev.
+      # Fixo, e não aleatório por processo, para que reiniciar o backend não deslogue quem
+      # está testando. Em produção é obrigatório (ver docker-compose.server.yml).
+      CARTA_JWT_SECRET: "${CARTA_JWT_SECRET:-}"
     volumes:
       - carta-db:/data
       # Os ~80 MB de modelos do easyocr baixam na primeira leitura e ficam aqui.

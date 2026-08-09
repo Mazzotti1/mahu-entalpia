@@ -6,6 +6,96 @@ psychrolib e leitura do monitor MAHU por OCR a partir de uma foto.
 - **Backend:** Python 3.11 + FastAPI + SQLite (aiosqlite) + psychrolib + easyocr
 - **Frontend:** React 19 + TypeScript + Vite + Zustand + Axios + Tailwind CSS
 
+## Autenticação
+
+A aplicação inteira exige login. O banco sobe com a conta de instalação **`admin` / `admin`**,
+semeada pela migração 8, para que o primeiro acesso seja possível.
+
+> **Essa senha é pública.** O hash está no código-fonte deste repositório. Ela existe para
+> ser trocada na primeira subida, e enquanto não for a API grita um aviso no log a cada
+> boot. Em produção, os dois comandos abaixo são o primeiro passo depois do deploy.
+
+```bash
+docker compose -f docker-compose.server.yml exec backend \
+  python -m scripts.criar_usuario renomear admin roberto
+docker compose -f docker-compose.server.yml exec backend \
+  python -m scripts.criar_usuario senha roberto
+```
+
+`renomear` preserva o id, e com ele a senha, as sessões e a autoria já gravada em
+`simulacoes` e `leituras_ocr` — a conta de instalação vira a conta real em vez de virar uma
+segunda linha órfã.
+
+Contas são administradas pela linha de comando. Não existe tela de cadastro nem de
+recuperação de senha de propósito: são poucos operadores, e um fluxo de recuperação por
+e-mail seria mais superfície de ataque do que conveniência.
+
+```bash
+python -m scripts.criar_usuario listar
+python -m scripts.criar_usuario criar joana --papel operador
+python -m scripts.criar_usuario senha joana
+python -m scripts.criar_usuario desativar joana
+```
+
+A senha nunca vai por argumento — `ps` mostraria a linha de comando e o histórico do shell
+a gravaria em disco. Ela é pedida no prompt.
+
+### Como a sessão funciona
+
+Três cookies, escritos pelo backend no login:
+
+| Cookie | Conteúdo | Vida | HttpOnly |
+|:--|:--|:--|:--|
+| `mahu_access` | JWT HS256 com `sub` e `sid` | 5 min | sim |
+| `mahu_refresh` | 32 bytes aleatórios, guardados no banco como sha256 | 30 dias | sim |
+| `mahu_csrf` | token do double-submit | 30 dias | **não** (o JS precisa copiá-lo) |
+
+Cookie, e não `Authorization: Bearer`, por duas razões concretas deste projeto: o histórico
+usa `EventSource`, que não permite definir cabeçalho nenhum; e frontend e API compartilham
+origem pelo proxy do nginx, então o cookie viaja sem CORS e sem ficar legível por
+JavaScript — o que um token em `localStorage` não consegue oferecer contra XSS. O preço é
+CSRF, pago com `SameSite=Strict` mais o double-submit de `mahu_csrf`.
+
+**A sessão é uma linha em `sessoes`, não só um JWT.** Um JWT autoassinado não sabe ser
+cancelado: sair da conta apagaria o cookie e uma cópia do token seguiria valendo até vencer.
+Com a linha no banco, sair derruba o acesso na requisição seguinte — inclusive um SSE já
+aberto, porque o stream reconfere a sessão a cada batimento de 25 s.
+
+**O refresh rotaciona e a rotação é vigiada.** Cada renovação queima a anterior. Se um
+refresh já queimado reaparecer, existem duas cópias do cookie em circulação e uma delas não
+é do dono: a cadeia inteira cai e o legítimo precisa entrar de novo.
+
+Uma sessão morre de quatro formas: revogada (logout, senha trocada, reúso detectado),
+vencida pelo teto absoluto de 30 dias, parada por mais de 14 dias, ou com o usuário
+desativado.
+
+### O que foi feito contra enumeração de usuários
+
+Usuário inexistente, senha errada e conta desativada devolvem **o mesmo 401 com o mesmo
+texto**. E também no mesmo tempo: quando o username não existe, o bcrypt roda mesmo assim,
+contra um hash descartável. Sem isso a negativa sairia em microssegundos num caso e em
+~250 ms no outro, e o cronômetro entregaria a lista de contas que a mensagem única esconde.
+
+A coluna `usuarios.username` é `UNIQUE COLLATE NOCASE`: `Roberto` e `roberto` não podem
+coexistir. Os valores de entrada passam por um `pattern` do Pydantic (`[A-Za-z0-9._-]{1,32}`)
+antes de chegar ao banco, e todo SQL do projeto é parametrizado com `?` — não há
+concatenação de string em consulta nenhuma.
+
+### Onde ficam os guards
+
+No backend, em `main.py`, um por router:
+
+```python
+app.include_router(pontos_router, dependencies=[Depends(exigir_usuario)])
+```
+
+No router, e não em cada rota: assim rota nova nasce fechada. A CI confere isso listando as
+rotas de `/api` e reprovando qualquer uma fora da lista pública que não exija sessão.
+
+No frontend, `AuthGate` envolve o `App` inteiro em `main.tsx`. Sem sessão, nenhum painel é
+montado — mas isso é conveniência, não segurança: a defesa está no backend, onde cada rota
+recusa por conta própria.
+
 ## Rodando com Docker (recomendado)
 
 Requer Docker com Compose v2.
@@ -28,6 +118,9 @@ mesma origem e não há CORS envolvido.
 | `CARTA_API_PORT` | `8000` | Porta do host para a API (Swagger) |
 | `CARTA_CORS_ORIGINS` | vazio | Origens extras de CORS, separadas por vírgula, para quem chamar a API direto |
 | `TORCH_INDEX_URL` | índice CPU-only da PyTorch | Índice do pip para o torch (veja abaixo) |
+| `CARTA_JWT_SECRET` | segredo fixo de dev | Assina os access tokens. **Obrigatório em produção** — sem ele a API não sobe |
+| `CARTA_ENV` | vazio | `production` tira o Swagger do ar e exige `Secure` nos cookies |
+| `CARTA_COOKIE_SECURE` | segue `CARTA_ENV` | Só para servir produção sem HTTPS |
 
 ### Tamanho da imagem do backend
 
@@ -94,7 +187,11 @@ backend/
 ├── migrations.py              # Schema versionado por PRAGMA user_version
 ├── models.py                  # Schemas Pydantic
 ├── routes/pontos.py           # Endpoints
+├── routes/auth.py             # Login, refresh, logout, /me (único router público)
 ├── services/
+│   ├── seguranca.py           # bcrypt, JWT e cookies (sem banco)
+│   ├── autenticacao.py        # Abrir, validar, rotacionar e revogar sessão
+│   ├── guardas.py             # Depends(exigir_usuario) e o double-submit de CSRF
 │   ├── psicrometria.py        # Cálculos via psychrolib
 │   ├── mahu.py                # Mapeamento campos do painel -> P1..P4
 │   ├── mahu_campos.py         # Metadados dos campos: casas decimais e faixas
@@ -116,6 +213,7 @@ backend/
 │   └── mahu_template.png      # Gabarito canônico do painel (1200x480)
 └── Dockerfile
 
+scripts/criar_usuario.py       # Contas: criar, trocar senha, desativar, listar
 docs/fotosMahu/                # Fotos de referência do OCR + ground_truth.json
 ```
 
@@ -220,6 +318,7 @@ scripts/
 ├── avaliar_ocr.py             # Acerto contra as 9 fotos com ground truth escrito à mão
 ├── avaliar_corpus.py          # Acerto contra o corpus de produção; promove o que for melhor
 ├── afinar_ocr.py              # Deriva um candidato do corpus e manda o juiz decidir
+├── criar_usuario.py           # Contas: criar, trocar senha, desativar, listar
 └── relatorio_telemetria.py    # Estado do corpus, dos perfis e das avaliações
 
 frontend/
@@ -230,13 +329,15 @@ frontend/
 │   │   ├── interaction.ts     # Ponteiro -> estado psicrométrico
 │   │   └── layers.ts          # Camadas que o painel liga/desliga
 │   ├── components/            # Componentes de UI
+│   │   ├── AuthGate.tsx       # Portão: sem sessão, o App nem chega a ser montado
+│   │   └── LoginScreen.tsx    # Usuário e senha; sem cadastro nem recuperação
 │   ├── hooks/useCamera.ts     # Ciclo de vida do getUserMedia
 │   ├── lib/
-│   │   ├── http.ts            # Instância do axios + tradução de erro do FastAPI
+│   │   ├── http.ts            # axios + CSRF + renovação automática no 401
 │   │   ├── psicrometria.ts    # Fórmulas locais (desenho e indicador)
 │   │   └── format.ts
 │   ├── services/              # Chamadas à API
-│   ├── store/                 # Zustand: useChartStore, useMahuStore, useHistoricoStore
+│   ├── store/                 # Zustand: useAuthStore, useChartStore, useMahuStore, useHistoricoStore
 │   └── types/                 # Espelho dos schemas da API
 ├── nginx.conf
 └── Dockerfile

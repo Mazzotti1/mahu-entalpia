@@ -55,7 +55,9 @@ jobs:
             "$(grep -i '^pydantic==' backend/requirements.txt)" \
             "$(grep -i '^aiosqlite==' backend/requirements.txt)" \
             "$(grep -i '^psychrolib==' backend/requirements.txt)" \
-            "$(grep -i '^python-multipart==' backend/requirements.txt)"
+            "$(grep -i '^python-multipart==' backend/requirements.txt)" \
+            "$(grep -i '^bcrypt==' backend/requirements.txt)" \
+            "$(grep -i '^pyjwt==' backend/requirements.txt)"
           python - <<'PY'
           import importlib, sys
 
@@ -72,6 +74,22 @@ jobs:
           rotas = [r for r in app.routes if getattr(r, "path", "").startswith("/api")]
           print(f"{len(rotas)} rotas de /api registradas sem OpenCV.")
           assert rotas, "nenhuma rota registrada"
+
+          # Rota nova nasce protegida porque o guard está no router — mas basta alguém
+          # registrar um router sem a dependência para abrir a API inteira em silêncio.
+          # Esta é a única checagem que percebe isso, e ela custa cinco linhas.
+          from backend.services.guardas import exigir_usuario, usuario_atual
+
+          PUBLICAS = {"/api/auth/login", "/api/auth/refresh", "/api/auth/logout"}
+          abertas = []
+          for rota in rotas:
+              if rota.path in PUBLICAS:
+                  continue
+              deps = {d.call for d in getattr(rota, "dependant", None).dependencies}
+              if not deps & {exigir_usuario, usuario_atual}:
+                  abertas.append(f"{sorted(rota.methods)} {rota.path}")
+          assert not abertas, f"rotas sem autenticação: {abertas}"
+          print(f"{len(rotas) - len(PUBLICAS)} rotas exigem sessão; {len(PUBLICAS)} públicas.")
           PY
 
       - name: Conferir que as migrações aplicam num banco vazio
@@ -183,12 +201,24 @@ jobs:
           $COMPOSE exec -T frontend wget -q -T 10 -O /dev/null http://127.0.0.1/ < /dev/null \
             || { echo "  frontend não respondeu"; $COMPOSE logs --tail 50 frontend; exit 1; }
 
-          # Sem pipe para `head`: o SIGPIPE faria o wget sair diferente de zero e, com
-          # pipefail ligado, o health check reprovaria uma resposta perfeitamente boa.
-          resposta=$($COMPOSE exec -T frontend \
-            wget -q -T 10 -O - 'http://127.0.0.1/api/simulacoes?limite=1' < /dev/null) \
-            || { echo "  proxy /api não respondeu"; $COMPOSE logs --tail 50 backend; exit 1; }
-          echo "  API respondeu: ${resposta:0:160}"
+          # A rota exige sessão desde a migração 8, então a resposta CERTA aqui é 401 — e ela
+          # prova as duas coisas de uma vez: o caminho nginx -> backend -> SQLite está de pé,
+          # e a API está fechada. Um 200 aqui seria a falha grave, não o 401.
+          #
+          # `-S` manda os cabeçalhos para o stderr, e o `|| true` é obrigatório: o wget do
+          # busybox sai diferente de zero em qualquer status de erro HTTP, e com pipefail
+          # ligado isso derrubaria o passo antes de podermos ler a resposta.
+          echo "Checando que /api exige sessão..."
+          cabecalhos=$($COMPOSE exec -T frontend \
+            wget -q -T 10 -S -O /dev/null 'http://127.0.0.1/api/simulacoes?limite=1' \
+            < /dev/null 2>&1 || true)
+          case "$cabecalhos" in
+            *401*) echo "  API respondeu 401 como esperado (rota protegida)." ;;
+            *200*) echo "  FALHA: /api/simulacoes respondeu 200 SEM sessão."; exit 1 ;;
+            *) echo "  proxy /api não respondeu:"; echo "$cabecalhos"
+               $COMPOSE logs --tail 50 backend; exit 1 ;;
+          esac
+
           echo "Deploy verificado."
           REMOTO
 

@@ -1,5 +1,17 @@
 /** Espelho dos modelos Pydantic de `backend/models.py`. */
 
+export interface LoginInput {
+  username: string;
+  senha: string;
+}
+
+/** Quem está autenticado. Não há token aqui: a sessão vive em cookies HttpOnly. */
+export interface Usuario {
+  id: number;
+  username: string;
+  papel: string;
+}
+
 export type FonteCalculo = "ur" | "entalpia" | "w_abs" | "banco";
 
 /**

@@ -73,7 +73,117 @@ export function isHttpStatus(error: unknown, status: number): boolean {
 export const http = axios.create({
   baseURL: resolveBaseUrl(),
   timeout: DEFAULT_TIMEOUT_MS,
+  // A sessão vive em cookies HttpOnly. Sem isto o navegador não os anexaria quando o
+  // `?api=` aponta para outro host, e toda requisição chegaria anônima.
+  withCredentials: true,
 });
+
+/** Nome do cookie legível por JavaScript que o backend escreve junto com a sessão. */
+const COOKIE_CSRF = "mahu_csrf";
+const CABECALHO_CSRF = "X-CSRF-Token";
+const METODOS_SEGUROS = new Set(["get", "head", "options"]);
+
+function lerCookie(nome: string): string | null {
+  const achado = document.cookie
+    .split("; ")
+    .find((parte) => parte.startsWith(`${nome}=`));
+  return achado ? decodeURIComponent(achado.slice(nome.length + 1)) : null;
+}
+
+/**
+ * Double-submit de CSRF: repete no cabeçalho o valor do cookie.
+ *
+ * Autenticação por cookie é enviada pelo navegador sozinha, inclusive em requisição
+ * disparada por outro site. `SameSite=Strict` já barra isso; o cabeçalho é o segundo
+ * cadeado, e funciona porque outro site consegue provocar a requisição mas não consegue LER
+ * o cookie para copiá-lo aqui.
+ */
+http.interceptors.request.use((config) => {
+  if (!METODOS_SEGUROS.has((config.method ?? "get").toLowerCase())) {
+    const token = lerCookie(COOKIE_CSRF);
+    if (token) {
+      config.headers.set(CABECALHO_CSRF, token);
+    }
+  }
+  return config;
+});
+
+/**
+ * Avisado quando a sessão morre de vez — refresh recusado, ou logout em outra aba.
+ *
+ * É um callback, e não um import de `useAuthStore`, porque a store precisa do `http` para
+ * fazer login: importá-la aqui fecharia um ciclo entre os dois módulos.
+ */
+let aoPerderSessao: (() => void) | null = null;
+
+export function definirAoPerderSessao(callback: (() => void) | null): void {
+  aoPerderSessao = callback;
+}
+
+/** Rotas que nunca podem disparar a renovação — seria o laço. */
+const ROTAS_DE_AUTENTICACAO = ["/auth/login", "/auth/refresh", "/auth/logout"];
+
+/**
+ * Uma renovação por vez. Sem isto, cinco requisições que expirem juntas dispararia cinco
+ * `/auth/refresh` em paralelo — e como cada renovação queima o refresh anterior, as quatro
+ * atrasadas chegariam com um token já rotacionado. O backend leria isso como cookie clonado
+ * e derrubaria a sessão inteira.
+ */
+let renovacaoEmCurso: Promise<boolean> | null = null;
+
+async function renovarSessao(): Promise<boolean> {
+  if (!renovacaoEmCurso) {
+    renovacaoEmCurso = http
+      .post("/auth/refresh")
+      .then(() => true)
+      .catch(() => false)
+      .finally(() => {
+        renovacaoEmCurso = null;
+      });
+  }
+  return renovacaoEmCurso;
+}
+
+// Registrado ANTES do tradutor de erro abaixo: os interceptadores rodam na ordem em que
+// são adicionados, e este precisa do AxiosError cru para poder refazer a requisição
+// original — o ApiError não carrega a configuração dela.
+http.interceptors.response.use(
+  (response) => response,
+  async (error: unknown) => {
+    if (!axios.isAxiosError(error) || error.response?.status !== 401) {
+      return Promise.reject(error);
+    }
+
+    const config = error.config as
+      | (typeof error.config & { _jaRenovou?: boolean })
+      | undefined;
+    const caminho = config?.url ?? "";
+
+    // 401 no login é senha errada, não sessão perdida. Renovar não resolveria, e chamar
+    // `aoPerderSessao` faria a tela de login se resetar no meio da digitação.
+    if (caminho.startsWith("/auth/login")) {
+      return Promise.reject(error);
+    }
+
+    // 401 vindo do próprio `/auth/refresh`, ou de uma requisição que já foi renovada uma
+    // vez, é veredito final: não há sessão para recuperar.
+    if (
+      !config ||
+      config._jaRenovou ||
+      ROTAS_DE_AUTENTICACAO.some((rota) => caminho.startsWith(rota))
+    ) {
+      aoPerderSessao?.();
+      return Promise.reject(error);
+    }
+
+    config._jaRenovou = true;
+    if (!(await renovarSessao())) {
+      aoPerderSessao?.();
+      return Promise.reject(error);
+    }
+    return http.request(config);
+  },
+);
 
 // Rejeita sempre com um Error de mensagem pronta: quem chama não precisa conhecer axios.
 http.interceptors.response.use(

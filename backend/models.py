@@ -7,6 +7,28 @@ from pydantic import BaseModel, Field, model_validator
 from backend.services.processo import PRESSAO_MAXIMA, PRESSAO_MINIMA
 
 
+class LoginInput(BaseModel):
+    """Credenciais do login.
+
+    O `pattern` do username não é regra de senha nem enfeite: fecha a entrada num alfabeto
+    ASCII conhecido antes que ela chegue ao banco, e é o que dá sentido ao `COLLATE NOCASE`
+    da coluna, que só sabe dobrar maiúsculas de ASCII.
+
+    O teto de 72 na senha é o limite do bcrypt — acima disso ele trunca em silêncio, e o
+    hash gravado deixaria de corresponder ao que a pessoa digitou. Não há mínimo: a política
+    de senha é de quem administra, não deste formulário.
+    """
+
+    username: str = Field(min_length=1, max_length=32, pattern=r"^[A-Za-z0-9._-]+$")
+    senha: str = Field(min_length=1, max_length=72)
+
+
+class UsuarioResponse(BaseModel):
+    id: int
+    username: str
+    papel: str
+
+
 class PontoInput(BaseModel):
     label: str = Field(min_length=1)
     tbs: float

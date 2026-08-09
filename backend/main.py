@@ -3,13 +3,17 @@ from __future__ import annotations
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.database import init_db
+from backend.routes.auth import router as auth_router
 from backend.routes.pontos import router as pontos_router
 from backend.routes.processo import router as processo_router
 from backend.services.armazenamento_perfil import carregar_perfil_ativo
+from backend.services.autenticacao import avisar_credenciais_padrao, purgar_sessoes
+from backend.services.guardas import exigir_usuario
+from backend.services.seguranca import em_producao
 from backend.services.telemetria_ocr import purgar_imagens_antigas
 
 # O frontend é servido pelo nginx (container) ou pelo dev server do Vite, e nos dois casos
@@ -41,6 +45,12 @@ async def lifespan(_: FastAPI):
     # perfil por requisição custaria uma ida ao banco em cada leitura para buscar uma
     # configuração que muda uma vez por semana, na melhor das hipóteses.
     await carregar_perfil_ativo()
+    # Sessões mortas há mais de um mês não servem nem para auditoria nem para a detecção de
+    # reúso de refresh, e a tabela cresce a cada renovação — uma por 5 minutos de uso.
+    await purgar_sessoes()
+    # Não bloqueia a subida: quem ainda não trocou a senha padrão precisa conseguir entrar
+    # justamente para trocá-la. O que ele faz é impedir que o esquecimento passe calado.
+    await avisar_credenciais_padrao()
     yield
 
 
@@ -48,18 +58,33 @@ app = FastAPI(
     title="Simulador Psicrométrico API",
     version="1.0.0",
     lifespan=lifespan,
+    # O Swagger é um mapa completo da API, e nada nele é público depois do login. Em
+    # produção sai do ar; em desenvolvimento continua onde sempre esteve.
+    docs_url=None if em_producao() else "/docs",
+    redoc_url=None if em_producao() else "/redoc",
+    openapi_url=None if em_producao() else "/openapi.json",
 )
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origens_permitidas(),
-    allow_credentials=False,
+    # Passou a ser True porque a autenticação é por cookie: sem isto, o acesso direto à API
+    # (o `?api=` do frontend, usado para abrir a página pelo celular) chegaria sempre
+    # anônimo. É seguro apenas porque `origens_permitidas()` é uma lista fechada — com
+    # curinga, qualquer site do mundo passaria a falar pela sessão de quem o visitasse.
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-app.include_router(pontos_router)
-app.include_router(processo_router)
+# Público por definição: é o que se alcança sem estar autenticado.
+app.include_router(auth_router)
+
+# O guard fica no router, e não em cada rota: assim rota nova nasce fechada. Pendurar a
+# dependência rota a rota faria da segurança uma questão de lembrança, e a que alguém
+# esquecesse ficaria aberta sem avisar ninguém.
+app.include_router(pontos_router, dependencies=[Depends(exigir_usuario)])
+app.include_router(processo_router, dependencies=[Depends(exigir_usuario)])
 
 
 @app.get("/")

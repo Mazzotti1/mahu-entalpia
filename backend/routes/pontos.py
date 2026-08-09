@@ -4,7 +4,16 @@ import asyncio
 from dataclasses import asdict
 from typing import AsyncIterator
 
-from fastapi import APIRouter, File, Header, HTTPException, Query, UploadFile
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+)
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import Response, StreamingResponse
 
@@ -24,7 +33,9 @@ from backend.models import (
     SimulacaoResumo,
 )
 from backend.services.armazenamento_perfil import ler_limiares_captura
+from backend.services.autenticacao import Usuario, sessao_viva
 from backend.services.eventos import difusor
+from backend.services.guardas import usuario_atual
 from backend.services.guia_captura import avaliar as avaliar_captura
 from backend.services.mahu import construir_simulacao
 from backend.services.mahu_campos import CAMPOS_CONFERIVEIS
@@ -66,8 +77,10 @@ async def calcular_ponto_endpoint(ponto: PontoInput) -> PontoResponse:
 
 
 @router.post("/simulacao", response_model=SimulacaoResponse)
-async def criar_simulacao(simulacao: SimulacaoInput) -> SimulacaoResponse:
-    return await persistir_simulacao(simulacao)
+async def criar_simulacao(
+    simulacao: SimulacaoInput, usuario: Usuario = Depends(usuario_atual)
+) -> SimulacaoResponse:
+    return await persistir_simulacao(simulacao, usuario_id=usuario.id)
 
 
 async def persistir_simulacao(
@@ -75,6 +88,7 @@ async def persistir_simulacao(
     *,
     origem: str = "manual",
     leitura_id: int | None = None,
+    usuario_id: int | None = None,
 ) -> SimulacaoResponse:
     pontos_response: list[PontoResponse] = []
 
@@ -93,8 +107,11 @@ async def persistir_simulacao(
 
     async with get_db() as db:
         cursor = await db.execute(
-            "INSERT INTO simulacoes (nome, descricao, origem, leitura_id) VALUES (?, ?, ?, ?)",
-            (simulacao.nome, simulacao.descricao, origem, leitura_id),
+            """
+            INSERT INTO simulacoes (nome, descricao, origem, leitura_id, usuario_id)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (simulacao.nome, simulacao.descricao, origem, leitura_id, usuario_id),
         )
         simulacao_id = cursor.lastrowid
         for ordem, (ponto_input, ponto_calc) in enumerate(zip(simulacao.pontos, pontos_response), start=1):
@@ -233,6 +250,7 @@ def _evento_sse(resumo: SimulacaoResumo) -> str:
 
 @router.get("/simulacoes/stream")
 async def stream_simulacoes(
+    request: Request,
     last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
 ) -> StreamingResponse:
     """Empurra cada leitura nova assim que ela é gravada.
@@ -240,11 +258,19 @@ async def stream_simulacoes(
     Na reconexão o navegador manda de volta o id do último evento que recebeu, e o que
     ficou para trás é reenviado antes de o stream continuar — é o que cobre o celular
     trocando de rede ou a aba suspensa.
+
+    A autenticação acontece duas vezes: no `Depends` do router, ao abrir, e de novo a cada
+    batimento enquanto o stream vive. Só na abertura não bastaria — a conexão dura horas, e
+    sair da conta numa aba deixaria a outra recebendo leituras pelo cano já aberto.
     """
     try:
         desde = int(last_event_id) if last_event_id else None
     except ValueError:
         desde = None
+
+    # A dependência do router já validou e guardou o id da sessão no `state`; ler daqui
+    # evita decodificar o JWT de novo, e é o que o laço vai reconferir a cada 25 s.
+    sessao_id: str = request.state.sessao_id
 
     async def gerar() -> AsyncIterator[str]:
         # A inscrição vem antes do catch-up: assim uma gravação que aconteça no meio do
@@ -260,10 +286,21 @@ async def stream_simulacoes(
                 try:
                     simulacao_id = await asyncio.wait_for(fila.get(), timeout=HEARTBEAT_SEGUNDOS)
                 except asyncio.TimeoutError:
+                    if await sessao_viva(sessao_id) is None:
+                        # Evento nomeado, e não simplesmente fechar a conexão: o
+                        # `EventSource` reconecta sozinho ao ver o cano cair, e ficaria
+                        # tentando para sempre. Assim o cliente sabe que precisa é voltar
+                        # para o login.
+                        yield "event: nao_autenticado\ndata: {}\n\n"
+                        return
                     # Comentário SSE: mantém a conexão viva através de proxies que derrubam
                     # conexões ociosas, e é ignorado pelo EventSource.
                     yield ": keepalive\n\n"
                     continue
+
+                if await sessao_viva(sessao_id) is None:
+                    yield "event: nao_autenticado\ndata: {}\n\n"
+                    return
 
                 resumos = await _consultar_resumos("WHERE s.id = ?", (simulacao_id,))
                 if resumos:
@@ -335,7 +372,9 @@ def source_from_db_row(row) -> str:
 
 
 @router.post("/mahu/ler", response_model=MahuLeituraResponse)
-async def ler_mahu_endpoint(image: UploadFile = File(...)) -> MahuLeituraResponse:
+async def ler_mahu_endpoint(
+    image: UploadFile = File(...), usuario: Usuario = Depends(usuario_atual)
+) -> MahuLeituraResponse:
     if image.content_type is None or not image.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="Envie um arquivo de imagem válido.")
 
@@ -387,6 +426,7 @@ async def ler_mahu_endpoint(image: UploadFile = File(...)) -> MahuLeituraRespons
         alinhamento=alinhamento,
         qualidade=qualidade,
         perfil_id=leitura["perfil_id"],
+        usuario_id=usuario.id,
     )
 
     return MahuLeituraResponse(
@@ -489,7 +529,9 @@ async def registrar_desfecho_endpoint(
 
 
 @router.post("/mahu/simulacao", response_model=SimulacaoResponse)
-async def criar_simulacao_mahu(campos: MahuCamposInput) -> SimulacaoResponse:
+async def criar_simulacao_mahu(
+    campos: MahuCamposInput, usuario: Usuario = Depends(usuario_atual)
+) -> SimulacaoResponse:
     """Monta e persiste a simulação a partir dos campos do MAHU já conferidos.
 
     Existe para que o frontend possa corrigir uma leitura de OCR sem ter de reproduzir o
@@ -513,5 +555,8 @@ async def criar_simulacao_mahu(campos: MahuCamposInput) -> SimulacaoResponse:
         )
 
     return await persistir_simulacao(
-        construir_simulacao(campos), origem=origem, leitura_id=campos.leitura_id
+        construir_simulacao(campos),
+        origem=origem,
+        leitura_id=campos.leitura_id,
+        usuario_id=usuario.id,
     )

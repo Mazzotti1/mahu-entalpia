@@ -62,12 +62,17 @@ async def registrar_leitura(
     alinhamento: Alinhamento,
     qualidade: Qualidade,
     perfil_id: int | None,
+    usuario_id: int | None = None,
 ) -> int:
     """Grava a leitura e devolve o id que o frontend devolve ao aplicar.
 
     `alinhamento` e `qualidade` descrevem a FOTO, não o resultado. É o par que permite
     separar "foto ruim" de "OCR ruim" depois — sem eles o banco registra que a leitura
     errou e não dá pista nenhuma de onde mexer.
+
+    `usuario_id` fecha a terceira pergunta: quem tirou a foto. Enquadramento é técnica
+    pessoal, e o corpus só consegue distinguir quem fotografa bem de quem não fotografa
+    sabendo de quem é cada leitura. Nulo nas leituras anteriores ao login.
     """
     async with get_db() as db:
         cursor = await db.execute(
@@ -76,9 +81,9 @@ async def registrar_leitura(
                 imagem_sha256, imagem_bytes, requires_review, avisos,
                 align_metodo, align_inliers, align_erro_reproj, align_erro_reproj_pior,
                 nitidez, reflexo, preenchimento, inclinacao_graus, px_por_digito,
-                perfil_id
+                perfil_id, usuario_id
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 hashlib.sha256(image_bytes).hexdigest(),
@@ -95,6 +100,7 @@ async def registrar_leitura(
                 qualidade.inclinacao_graus,
                 qualidade.px_por_digito,
                 perfil_id,
+                usuario_id,
             ),
         )
         leitura_id = cursor.lastrowid

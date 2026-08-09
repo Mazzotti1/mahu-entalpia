@@ -4,5 +4,9 @@ psychrolib==2.5.0
 aiosqlite==0.20.0
 pydantic==2.9.0
 python-multipart==0.0.9
+# Autenticação. bcrypt direto, sem passlib: passlib 1.7.4 não lê a versão do bcrypt>=4 e
+# emite erro no import, e a camada de abstração não serve para nada com um algoritmo só.
+bcrypt==4.2.1
+pyjwt==2.9.0
 opencv-python-headless>=4.10.0.84
 easyocr==1.7.2

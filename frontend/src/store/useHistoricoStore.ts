@@ -6,6 +6,7 @@ import {
   buscarSimulacao,
   listarSimulacoes,
 } from "@/services/psicrometriaApi";
+import { useAuthStore } from "@/store/useAuthStore";
 import { useProcessoStore } from "@/store/useProcessoStore";
 import { useChartStore } from "@/store/useChartStore";
 import type { SimulacaoResumo } from "@/types/api";
@@ -193,7 +194,10 @@ export const useHistoricoStore = create<HistoricoState>((set, get) => ({
       }
 
       set({ transporte: "conectando" });
-      fonte = new EventSource(streamUrl("/simulacoes/stream"));
+      // `withCredentials` porque a sessão é cookie: na mesma origem o navegador já o
+      // enviaria, mas com o `?api=` apontando para outro host o stream chegaria anônimo e
+      // o backend o recusaria com 401.
+      fonte = new EventSource(streamUrl("/simulacoes/stream"), { withCredentials: true });
 
       fonte.addEventListener("open", () => {
         pararPolling();
@@ -209,6 +213,15 @@ export const useHistoricoStore = create<HistoricoState>((set, get) => ({
         } catch {
           void get().atualizarLista();
         }
+      });
+
+      // O backend reconfere a sessão a cada batimento e manda este evento quando ela cai —
+      // logout em outra aba, sessão revogada no servidor. Sem ele o `EventSource`
+      // reconectaria em laço para sempre contra um endpoint que só devolve 401.
+      fonte.addEventListener("nao_autenticado", () => {
+        fechar();
+        pararPolling();
+        useAuthStore.getState().sessaoPerdida();
       });
 
       fonte.addEventListener("error", () => {

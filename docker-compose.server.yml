@@ -10,6 +10,12 @@ services:
       CARTA_DB_PATH: /data/simulador.db
       EASYOCR_MODULE_PATH: /models/easyocr
       CARTA_CORS_ORIGINS: "${CARTA_CORS_ORIGINS:-}"
+      # `:?` e não `:-`: sem o segredo no .env da VPS o compose recusa subir aqui, com o
+      # nome da variável na mensagem. O backend também se recusaria, mas só depois de o
+      # container existir e o healthcheck falhar trinta vezes.
+      CARTA_JWT_SECRET: "${CARTA_JWT_SECRET:?defina CARTA_JWT_SECRET no .env da VPS}"
+      # Tira o Swagger do ar e exige Secure nos cookies de sessão.
+      CARTA_ENV: production
     volumes:
       - carta-db:/data
       - easyocr-models:/models/easyocr

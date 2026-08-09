@@ -6,7 +6,7 @@ histórico e o SSE já usam; aqui é o processo encadeado, que precisa dos setpo
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
 from backend.models import (
     DesvioResponse,
@@ -17,7 +17,9 @@ from backend.models import (
     SimulacaoInput,
 )
 from backend.routes.pontos import persistir_simulacao
+from backend.services.autenticacao import Usuario
 from backend.services.desvios import calcular_desvios
+from backend.services.guardas import usuario_atual
 from backend.services.mahu_campos import CAMPOS_CONFERIVEIS
 from backend.services.telemetria_ocr import registrar_aplicacao
 from backend.services.armazenamento_processo import (
@@ -67,7 +69,9 @@ def _simulacao_do_processo(processo: Processo, nome: str, descricao: str | None)
 
 
 @router.post("/processo", response_model=ProcessoResponse)
-async def calcular_processo(entrada: ProcessoInput) -> ProcessoResponse:
+async def calcular_processo(
+    entrada: ProcessoInput, usuario: Usuario = Depends(usuario_atual)
+) -> ProcessoResponse:
     """Resolve o processo a partir do ar de entrada e persiste o resultado.
 
     Sem `setpoints` no corpo, usa os que estão gravados — é o caminho normal, já que a
@@ -84,6 +88,7 @@ async def calcular_processo(entrada: ProcessoInput) -> ProcessoResponse:
     simulacao = await persistir_simulacao(
         _simulacao_do_processo(processo, entrada.nome, entrada.descricao),
         origem="processo",
+        usuario_id=usuario.id,
     )
     processo_id = await gravar_processo(simulacao.id, processo, balanco)
 
@@ -104,7 +109,9 @@ async def obter_processo(simulacao_id: int) -> ProcessoResponse:
 
 
 @router.post("/mahu/processo", response_model=ProcessoResponse)
-async def calcular_processo_do_mahu(campos: MahuCamposInput) -> ProcessoResponse:
+async def calcular_processo_do_mahu(
+    campos: MahuCamposInput, usuario: Usuario = Depends(usuario_atual)
+) -> ProcessoResponse:
     """Resolve o processo a partir da leitura do painel já conferida.
 
     Só TT01 e MT_01 alimentam o cálculo: são o ar de entrada. TT_04, TT_06, TT07 e MT07
@@ -137,6 +144,7 @@ async def calcular_processo_do_mahu(campos: MahuCamposInput) -> ProcessoResponse
         _simulacao_do_processo(processo, "Processo MAHU via OCR", "Leitura do monitor MAHU."),
         origem=origem,
         leitura_id=campos.leitura_id,
+        usuario_id=usuario.id,
     )
     processo_id = await gravar_processo(simulacao.id, processo, balanco)
 
