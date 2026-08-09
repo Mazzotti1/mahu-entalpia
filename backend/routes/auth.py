@@ -8,7 +8,7 @@ desativada": os três saem como o mesmo 401 com o mesmo texto. Diferenciar trans
 formulário num verificador de quem trabalha na planta, que é metade do trabalho de quem vai
 tentar adivinhar a senha depois.
 """
-
+ 
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
