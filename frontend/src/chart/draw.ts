@@ -406,17 +406,44 @@ function desenharVetorProcesso(ctx: CanvasRenderingContext2D, points: ProcessPoi
   ctx.stroke();
 }
 
+interface GrupoPontoProcesso {
+  tbs: number;
+  wKgKg: number;
+  nomes: string[];
+}
+
+/**
+ * Junta pontos consecutivos que caem exatamente na mesma posição — o que acontece sempre
+ * que uma etapa sai `nula` (`processo.py: precisa_umidificar = false`, ou W já bate no
+ * setpoint saturado): P2/P3/P4 viram o mesmo estado físico com nomes diferentes. Sem
+ * agrupar, cada um desenha seu dot+rótulo em cima do anterior e o de baixo some por
+ * completo — foi o que sumiu com o P2 numa entrada fria/úmida o bastante para saturar
+ * sozinha na serpentina.
+ */
+function agruparPontosCoincidentes(points: ProcessPoint[]): GrupoPontoProcesso[] {
+  const grupos: GrupoPontoProcesso[] = [];
+  for (const ponto of points) {
+    const ultimo = grupos[grupos.length - 1];
+    if (ultimo && ultimo.tbs === ponto.tbs && ultimo.wKgKg === ponto.wKgKg) {
+      ultimo.nomes.push(ponto.nome);
+    } else {
+      grupos.push({ tbs: ponto.tbs, wKgKg: ponto.wKgKg, nomes: [ponto.nome] });
+    }
+  }
+  return grupos;
+}
+
 /**
  * Rótulo acima ou abaixo do ponto conforme o vizinho, em vez de deslocamento fixo por
  * nome. Com o processo, o número de pontos e a posição deles mudam com os setpoints — uma
  * tabela P1..P4 escrita à mão deixaria P5 sem regra e erraria assim que a carta mudasse.
  */
 function deslocamentoDoRotulo(
-  points: ProcessPoint[],
+  grupos: GrupoPontoProcesso[],
   indice: number,
 ): { dx: number; dy: number } {
-  const atual = points[indice];
-  const vizinho = points[indice + 1] ?? points[indice - 1];
+  const atual = grupos[indice];
+  const vizinho = grupos[indice + 1] ?? grupos[indice - 1];
   // Vizinho acima empurra o rótulo para baixo, e vice-versa.
   const acima = vizinho ? vizinho.wKgKg > atual.wKgKg : false;
   const direita = vizinho ? vizinho.tbs > atual.tbs : true;
@@ -424,23 +451,26 @@ function deslocamentoDoRotulo(
 }
 
 function desenharPontosProcesso(ctx: CanvasRenderingContext2D, points: ProcessPoint[]): void {
-  points.forEach((ponto, indice) => {
-    const x = tbsToX(ponto.tbs);
-    const y = wToY(ponto.wKgKg * 1000);
+  const grupos = agruparPontosCoincidentes(points);
+
+  grupos.forEach((grupo, indice) => {
+    const x = tbsToX(grupo.tbs);
+    const y = wToY(grupo.wKgKg * 1000);
 
     ctx.beginPath();
     ctx.fillStyle = CORES.pontoProcesso;
     ctx.arc(x, y, 5, 0, Math.PI * 2);
     ctx.fill();
 
-    const deslocamento = deslocamentoDoRotulo(points, indice);
+    const rotulo = grupo.nomes.join("/");
+    const deslocamento = deslocamentoDoRotulo(grupos, indice);
     ctx.font = "bold 12px Segoe UI";
     // Halo branco: os rótulos passam sobre as isolinhas e o texto sumia em cima delas.
     ctx.lineWidth = 3;
     ctx.strokeStyle = CORES.fundo;
-    ctx.strokeText(ponto.nome, x + deslocamento.dx, y + deslocamento.dy);
+    ctx.strokeText(rotulo, x + deslocamento.dx, y + deslocamento.dy);
     ctx.fillStyle = CORES.rotuloEixo;
-    ctx.fillText(ponto.nome, x + deslocamento.dx, y + deslocamento.dy);
+    ctx.fillText(rotulo, x + deslocamento.dx, y + deslocamento.dy);
   });
 }
 
