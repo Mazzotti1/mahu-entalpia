@@ -12,6 +12,7 @@ from backend.models import (
     GastoTermicoHistoricoResponse,
     MahuCamposInput,
     ProcessoInput,
+    ProcessoOtimizadoInput,
     ProcessoResponse,
     SetpointsInput,
     SimulacaoInput,
@@ -32,7 +33,12 @@ from backend.services.armazenamento_processo import (
     para_dominio,
 )
 from backend.services.energia import calcular_balanco
-from backend.services.processo import Processo, resolver_processo
+from backend.services.processo import (
+    Processo,
+    classificar_regiao,
+    resolver_processo,
+    resolver_processo_otimizado,
+)
 from backend.services.psicrometria import estado_por_ur
 
 router = APIRouter(prefix="/api", tags=["processo"])
@@ -96,6 +102,26 @@ async def calcular_processo(
     return montar_response(
         processo, balanco, processo_id=processo_id, simulacao_id=simulacao.id
     )
+
+
+@router.post("/processo/otimizado", response_model=ProcessoResponse)
+async def calcular_processo_otimizado(
+    entrada: ProcessoOtimizadoInput, usuario: Usuario = Depends(usuario_atual)
+) -> ProcessoResponse:
+    """A carta otimizada para o mesmo P1: escolhe o alvo de entalpia por região e resolve a
+    mesma cadeia de sempre (ver `resolver_processo_otimizado`).
+
+    Não persiste: é um comparativo hipotético para a carta, não uma leitura operacional —
+    salvá-lo junto do histórico misturaria os dois no gráfico de gasto térmico.
+    """
+    setpoints = await ler_setpoints()
+    dominio = para_dominio(setpoints)
+
+    p1 = estado_por_ur(entrada.tbs, entrada.ur, dominio.pressao_atm)
+    processo = resolver_processo_otimizado(p1, dominio)
+    balanco = calcular_balanco(processo)
+
+    return montar_response(processo, balanco, regiao=classificar_regiao(p1))
 
 
 @router.get("/simulacao/{simulacao_id}/processo", response_model=ProcessoResponse)

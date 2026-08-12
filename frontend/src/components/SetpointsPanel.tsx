@@ -17,6 +17,13 @@ const CAMPOS: CampoSetpoint[] = [
   { chave: "w_saida", rotulo: "Umidade abs. de saída", unidade: "g/kg", passo: "0.01" },
   { chave: "tbs_final", rotulo: "Temperatura de insuflamento", unidade: "°C", passo: "0.1" },
   { chave: "entalpia_alvo", rotulo: "Entalpia alvo (P2)", unidade: "kJ/kg", passo: "0.01" },
+  {
+    chave: "entalpia_alvo_seco",
+    rotulo: "Entalpia alvo seco (carta otimizada)",
+    unidade: "kJ/kg",
+    passo: "0.01",
+    ajuda: "Usado na carta otimizada quando P1 chega mais seco que a umidade de saída.",
+  },
   { chave: "vazao_m3h", rotulo: "Vazão do MAHU", unidade: "m³/h", passo: "1" },
   {
     chave: "pressao_atm",

@@ -116,6 +116,9 @@ class SetpointsInput(BaseModel):
     tbs_final: float = Field(20.0, ge=-10.0, le=60.0)
     # Entalpia alvo de P2, kJ/kg.
     entalpia_alvo: float = Field(36.20, ge=0.0, le=120.0)
+    # Entalpia alvo de P2 na carta otimizada, quando P1 chega mais seco que w_saida (zonas
+    # 1/2 da estratégia por região). Zonas úmidas continuam usando `entalpia_alvo` acima.
+    entalpia_alvo_seco: float = Field(28.0, ge=0.0, le=120.0)
     # Vazão volumétrica medida na ENTRADA (decisão A), m³/h.
     vazao_m3h: float = Field(36575.0, gt=0.0, le=1_000_000.0)
     # Em Pa. A faixa reaproveita a do motor para não haver dois limites divergindo, e existe
@@ -184,6 +187,14 @@ class ProcessoInput(BaseModel):
     descricao: str | None = None
 
 
+class ProcessoOtimizadoInput(BaseModel):
+    """Ar de entrada para a carta otimizada. Sempre usa os setpoints gravados — não há
+    override por requisição, porque a otimização depende deles (entalpia_alvo_seco)."""
+
+    tbs: float = Field(ge=-10.0, le=60.0)
+    ur: float = Field(gt=0.0, le=100.0)
+
+
 class DesvioResponse(BaseModel):
     """Medição do painel contra o valor que o processo dos setpoints prevê.
 
@@ -214,6 +225,10 @@ class ProcessoResponse(BaseModel):
     # o gráfico de gasto térmico usa no eixo Delta H. `None` quando o campo não veio nesta
     # leitura (é opcional no painel).
     delta_h_entalpia: float | None = None
+    # Qual das 4 regiões da estratégia otimizada P1 ocupa (1 vermelho .. 4 azul), só
+    # informativo para legenda/rótulo da carta. `None` fora da rota otimizada, ou quando P1
+    # não cai em nenhuma das 4 faixas descritas.
+    regiao: int | None = None
 
 
 class GastoTermicoHistoricoItem(BaseModel):

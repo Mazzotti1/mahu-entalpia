@@ -107,6 +107,8 @@ export interface Setpoints {
   tbs_final: number;
   /** Entalpia alvo de P2, kJ/kg. */
   entalpia_alvo: number;
+  /** Entalpia alvo de P2 na carta otimizada quando P1 chega mais seco que w_saida, kJ/kg. */
+  entalpia_alvo_seco: number;
   /** Vazão volumétrica medida na ENTRADA (decisão A), m³/h. */
   vazao_m3h: number;
   /** Pressão atmosférica em Pa — não em kPa. */
@@ -201,6 +203,11 @@ export interface ProcessoResponse {
    * leitura (é opcional no painel).
    */
   delta_h_entalpia: number | null;
+  /**
+   * Em qual das 4 regiões da estratégia otimizada P1 cai (1 vermelho..4 azul), só para
+   * legenda. `null` fora da rota otimizada, ou quando P1 não cai em nenhuma das 4 faixas.
+   */
+  regiao: number | null;
 }
 
 /** Uma linha do histórico gasto térmico × Delta H, para o gráfico e a planilha. */

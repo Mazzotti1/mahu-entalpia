@@ -29,6 +29,12 @@ from backend.services.psicrometria import Estado
 
 _CAMPOS_SETPOINTS = ("w_saida", "tbs_final", "entalpia_alvo", "vazao_m3h", "pressao_atm")
 
+# `entalpia_alvo_seco` só existe na tabela `setpoints` (configuração vigente da planta).
+# `processos` guarda a cópia usada em cada execução (`_CAMPOS_SETPOINTS` acima) e nunca
+# recebeu essa coluna: a carta otimizada não persiste corrida nenhuma ali, então não há
+# histórico dela para reconstruir.
+_CAMPOS_SETPOINTS_CONFIG = _CAMPOS_SETPOINTS + ("entalpia_alvo_seco",)
+
 # Só P1 vem direto do painel (TT01+MT_01); P2..P5 são a cadeia calculada dos setpoints
 # (decisão B). Ver o comentário de `PontoProcessoResponse.fonte`.
 _FONTE_POR_LABEL = {"P1": "lido_digitado"}
@@ -61,6 +67,7 @@ def montar_response(
     simulacao_id: int | None = None,
     desvios: list[Desvio] | None = None,
     delta_h_entalpia: float | None = None,
+    regiao: int | None = None,
 ) -> ProcessoResponse:
     etapas = [
         EtapaResponse(
@@ -113,13 +120,14 @@ def montar_response(
             for d in (desvios or [])
         ],
         delta_h_entalpia=round(delta_h_entalpia, 2) if delta_h_entalpia is not None else None,
+        regiao=regiao,
     )
 
 
 async def ler_setpoints() -> SetpointsInput:
     async with get_db() as db:
         cursor = await db.execute(
-            f"SELECT {', '.join(_CAMPOS_SETPOINTS)} FROM setpoints WHERE id = 1"
+            f"SELECT {', '.join(_CAMPOS_SETPOINTS_CONFIG)} FROM setpoints WHERE id = 1"
         )
         linha = await cursor.fetchone()
     # A migração 3 semeia a linha; ausente, os defaults do modelo valem.
@@ -127,20 +135,20 @@ async def ler_setpoints() -> SetpointsInput:
 
 
 async def gravar_setpoints(setpoints: SetpointsInput) -> SetpointsInput:
+    # Colunas do INSERT e o SET do UPDATE derivam da MESMA tupla que gera os valores: uma
+    # lista de colunas escrita à mão ao lado de outra, em ordem diferente, é como coluna e
+    # valor saem trocados sem o menor aviso (SQLite liga por posição, não por nome).
+    colunas = ", ".join(_CAMPOS_SETPOINTS_CONFIG)
+    placeholders = ", ".join("?" for _ in _CAMPOS_SETPOINTS_CONFIG)
+    atualiza = ", ".join(f"{campo} = excluded.{campo}" for campo in _CAMPOS_SETPOINTS_CONFIG)
     async with get_db() as db:
         await db.execute(
-            """
-            INSERT INTO setpoints (id, w_saida, tbs_final, entalpia_alvo, vazao_m3h, pressao_atm)
-            VALUES (1, ?, ?, ?, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET
-                w_saida = excluded.w_saida,
-                tbs_final = excluded.tbs_final,
-                entalpia_alvo = excluded.entalpia_alvo,
-                vazao_m3h = excluded.vazao_m3h,
-                pressao_atm = excluded.pressao_atm,
-                atualizado_em = CURRENT_TIMESTAMP
+            f"""
+            INSERT INTO setpoints (id, {colunas})
+            VALUES (1, {placeholders})
+            ON CONFLICT(id) DO UPDATE SET {atualiza}, atualizado_em = CURRENT_TIMESTAMP
             """,
-            tuple(getattr(setpoints, campo) for campo in _CAMPOS_SETPOINTS),
+            tuple(getattr(setpoints, campo) for campo in _CAMPOS_SETPOINTS_CONFIG),
         )
         await db.commit()
     return setpoints

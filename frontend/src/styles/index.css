@@ -4,6 +4,9 @@
   --font-sans: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
   /* O layout de duas colunas colapsa a 1100px, como no CSS original. */
   --breakpoint-desk: 1100px;
+  /* Duas cartas 1200:760 lado a lado + sidebar de 300px não cabem legíveis em 1100px (dá
+     ~250px de altura cada); esperar até aqui antes de sair do empilhado vertical. */
+  --breakpoint-cartas: 1600px;
 }
 
 /* Celular deitado.

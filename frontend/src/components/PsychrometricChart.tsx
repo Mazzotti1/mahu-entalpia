@@ -11,16 +11,26 @@ interface Medida {
   dpr: number;
 }
 
-export function PsychrometricChart() {
+interface PsychrometricChartProps {
+  /** Qual store ler — cada carta (atual/otimizada) tem a sua, para o cursor não se misturar. */
+  useStore?: typeof useChartStore;
+  /** Liga o fundo colorido das 4 regiões da estratégia otimizada. */
+  mostrarRegioes?: boolean;
+}
+
+export function PsychrometricChart({
+  useStore = useChartStore,
+  mostrarRegioes = false,
+}: PsychrometricChartProps = {}) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [medida, setMedida] = useState<Medida>({ largura: 0, altura: 0, dpr: 1 });
 
-  const layers = useChartStore((state) => state.layers);
-  const points = useChartStore((state) => state.points);
-  const segments = useChartStore((state) => state.segments);
-  const probe = useChartStore((state) => state.probe);
-  const setProbe = useChartStore((state) => state.setProbe);
-  const resetProbe = useChartStore((state) => state.resetProbe);
+  const layers = useStore((state) => state.layers);
+  const points = useStore((state) => state.points);
+  const segments = useStore((state) => state.segments);
+  const probe = useStore((state) => state.probe);
+  const setProbe = useStore((state) => state.setProbe);
+  const resetProbe = useStore((state) => state.resetProbe);
 
   /**
    * O tamanho de tela do canvas vem do CSS (`aspect-ratio` mais largura ou altura cheia),
@@ -104,8 +114,8 @@ export function PsychrometricChart() {
       0,
       0,
     );
-    renderChart(ctx, { layers, points, segments, probe });
-  }, [layers, points, segments, probe, medida]);
+    renderChart(ctx, { layers, points, segments, probe, mostrarRegioes });
+  }, [layers, points, segments, probe, medida, mostrarRegioes]);
 
   const lerPonteiro = (event: PointerEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;

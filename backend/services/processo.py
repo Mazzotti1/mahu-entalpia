@@ -16,7 +16,7 @@ muda tanto o kW quanto o desenho na carta.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Literal
 
 from backend.services.psicrometria import (
@@ -53,6 +53,9 @@ class Setpoints:
     tbs_final: float = 20.0
     # Entalpia alvo de P2, em kJ/kg. Setpoint independente — ver §4 do documento.
     entalpia_alvo: float = 36.20
+    # Entalpia alvo de P2 na carta otimizada, quando P1 chega mais seco que w_saida (zonas
+    # 1/2 da estratégia por região). Zonas úmidas continuam usando `entalpia_alvo` acima.
+    entalpia_alvo_seco: float = 28.0
     # Vazão volumétrica do MAHU, em m³/h, medida na ENTRADA (decisão A).
     vazao_m3h: float = 36575.0
     pressao_atm: float = PRESSAO_PADRAO
@@ -241,6 +244,66 @@ def resolver_processo(entrada: Estado, setpoints: Setpoints) -> Processo:
         setpoints=setpoints,
         avisos=avisos,
     )
+
+
+# --- Carta otimizada -----------------------------------------------------------------
+#
+# A estratégia por região (docs anexados ao pedido) muda só o alvo de entalpia da 1ª
+# etapa: zonas secas (P1 mais seco que o setpoint de saída) usam `entalpia_alvo_seco`;
+# zonas úmidas usam o `entalpia_alvo` que já existe. `resolver_processo` já resolve os
+# dois casos (umidificar se W2 ficar abaixo do alvo, desumidificar se ficar acima) — não
+# há física nova aqui, só a escolha de qual alvo entra na função de sempre.
+#
+# `w_saida`/`tbs_final` da carta otimizada são fixos (7,30 g/kg / 20 °C), independentes do
+# que estiver configurado nos setpoints da carta atual.
+
+W_SAIDA_OTIMIZADO = 7.30
+TBS_FINAL_OTIMIZADO = 20.0
+
+
+def entalpia_alvo_otimizada(p1: Estado, setpoints: Setpoints) -> float:
+    """Qual alvo de entalpia usar na 1ª etapa da carta otimizada.
+
+    P1 mais seco que o setpoint de saída precisa ganhar umidade: um alvo de entalpia mais
+    baixo (28 kJ/kg) é o que, depois de umidificar até saturar, chega exatamente em
+    `w_saida`. P1 já úmido demais precisa perder umidade, e é o `entalpia_alvo` (36,2 kJ/kg)
+    já configurado que produz a saturação acima de `w_saida`, disparando a etapa de
+    desumidificação em `resolver_processo`.
+    """
+    return (
+        setpoints.entalpia_alvo_seco if p1.w < W_SAIDA_OTIMIZADO else setpoints.entalpia_alvo
+    )
+
+
+def resolver_processo_otimizado(p1: Estado, setpoints: Setpoints) -> Processo:
+    """A carta otimizada é a mesma cadeia de sempre, só com o alvo certo por região."""
+    setpoints_otimizados = replace(
+        setpoints,
+        entalpia_alvo=entalpia_alvo_otimizada(p1, setpoints),
+        w_saida=W_SAIDA_OTIMIZADO,
+        tbs_final=TBS_FINAL_OTIMIZADO,
+    )
+    return resolver_processo(p1, setpoints_otimizados)
+
+
+def classificar_regiao(p1: Estado) -> int | None:
+    """Em qual das 4 regiões do diagrama P1 cai — só para legenda/rótulo da carta.
+
+    Os limiares são os do documento anexado (tbs em °C, w em g/kg, entalpia em kJ/kg).
+    Não decide o cálculo: quem decide o alvo de entalpia é `entalpia_alvo_otimizada`, com a
+    regra mais simples (só W1 contra `w_saida`), que cobre sem lacunas os casos que os
+    limiares abaixo deixam de fora.
+    """
+    tbs, w, h = p1.tbs, p1.w, p1.entalpia
+    if tbs <= 23 and h < 28:
+        return 1
+    if 9 <= tbs <= 27 and w < W_SAIDA_OTIMIZADO and h > 28:
+        return 2
+    if 9 <= tbs <= 17 and w > W_SAIDA_OTIMIZADO and h < 36:
+        return 3
+    if h > 36 and w > W_SAIDA_OTIMIZADO:
+        return 4
+    return None
 
 
 def _validar_pressao(setpoints: Setpoints, avisos: list[Aviso]) -> None:

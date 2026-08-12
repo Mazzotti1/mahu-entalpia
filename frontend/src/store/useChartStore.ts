@@ -62,61 +62,71 @@ interface ChartState {
   aplicarPontosDoProcesso: (processo: ProcessoResponse) => void;
 }
 
-export const useChartStore = create<ChartState>((set, get) => ({
-  layers: DEFAULT_LAYER_VISIBILITY,
-  points: [],
-  segments: [],
-  probe: null,
-  carregando: false,
-  erro: null,
+/**
+ * Fábrica em vez de uma constante só: a carta otimizada mostra um processo diferente da
+ * carta atual ao mesmo tempo, na mesma tela — precisa da sua própria store, com seu
+ * próprio cursor, para hover numa carta não mexer no desenho da outra.
+ */
+function createChartStore() {
+  return create<ChartState>((set, get) => ({
+    layers: DEFAULT_LAYER_VISIBILITY,
+    points: [],
+    segments: [],
+    probe: null,
+    carregando: false,
+    erro: null,
 
-  toggleLayer: (key) =>
-    set((state) => ({ layers: { ...state.layers, [key]: !state.layers[key] } })),
+    toggleLayer: (key) =>
+      set((state) => ({ layers: { ...state.layers, [key]: !state.layers[key] } })),
 
-  setProbe: (probe) => set({ probe }),
+    setProbe: (probe) => set({ probe }),
 
-  /** Com o ponteiro fora da carta, o indicador volta a mostrar o primeiro ponto. */
-  resetProbe: () => {
-    const primeiro = get().points[0];
-    set({ probe: primeiro ? { tbs: primeiro.tbs, wKgKg: primeiro.wKgKg } : null });
-  },
+    /** Com o ponteiro fora da carta, o indicador volta a mostrar o primeiro ponto. */
+    resetProbe: () => {
+      const primeiro = get().points[0];
+      set({ probe: primeiro ? { tbs: primeiro.tbs, wKgKg: primeiro.wKgKg } : null });
+    },
 
-  aplicarSimulacao: (simulacao) => {
-    if (simulacao.pontos.length === 0) {
-      set({ erro: "A API retornou uma simulação sem pontos." });
-      return;
-    }
-    const points = simulacao.pontos.map(toProcessPoint);
-    set({
-      points,
-      // Uma simulação avulsa não descreve trajetórias: os pontos são ligados por reta.
-      segments: [],
-      probe: { tbs: points[0].tbs, wKgKg: points[0].wKgKg },
-      erro: null,
-    });
-  },
+    aplicarSimulacao: (simulacao) => {
+      if (simulacao.pontos.length === 0) {
+        set({ erro: "A API retornou uma simulação sem pontos." });
+        return;
+      }
+      const points = simulacao.pontos.map(toProcessPoint);
+      set({
+        points,
+        // Uma simulação avulsa não descreve trajetórias: os pontos são ligados por reta.
+        segments: [],
+        probe: { tbs: points[0].tbs, wKgKg: points[0].wKgKg },
+        erro: null,
+      });
+    },
 
-  aplicarPontosDoProcesso: (processo) => {
-    const points: ProcessPoint[] = processo.pontos.map((ponto) => ({
-      id: null,
-      nome: ponto.label,
-      tbs: ponto.tbs,
-      wKgKg: ponto.w / 1000,
-      ur: ponto.ur,
-      entalpia: ponto.entalpia,
-      tbu: ponto.tbu,
-      volumeEspecifico: ponto.volume_especifico,
-      pontoOrvalho: ponto.ponto_orvalho,
-      fonteCalculo: "w_abs",
-      fonte: ponto.fonte,
-      saturado: ponto.saturado,
-    }));
-    set({
-      points,
-      segments: paraSegmentos(processo),
-      probe: { tbs: points[0].tbs, wKgKg: points[0].wKgKg },
-      erro: null,
-    });
-  },
+    aplicarPontosDoProcesso: (processo) => {
+      const points: ProcessPoint[] = processo.pontos.map((ponto) => ({
+        id: null,
+        nome: ponto.label,
+        tbs: ponto.tbs,
+        wKgKg: ponto.w / 1000,
+        ur: ponto.ur,
+        entalpia: ponto.entalpia,
+        tbu: ponto.tbu,
+        volumeEspecifico: ponto.volume_especifico,
+        pontoOrvalho: ponto.ponto_orvalho,
+        fonteCalculo: "w_abs",
+        fonte: ponto.fonte,
+        saturado: ponto.saturado,
+      }));
+      set({
+        points,
+        segments: paraSegmentos(processo),
+        probe: { tbs: points[0].tbs, wKgKg: points[0].wKgKg },
+        erro: null,
+      });
+    },
+  }));
+}
 
-}));
+export const useChartStore = createChartStore();
+/** A carta otimizada (estratégia por região) — ver `resolver_processo_otimizado` no backend. */
+export const useChartStoreOtimizada = createChartStore();

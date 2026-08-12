@@ -1,5 +1,6 @@
 import { chartConfig, getPlotBounds, tbsToX, wToY } from "@/chart/config";
 import type { LayerVisibility } from "@/chart/layers";
+import { desenharFundoRegioes } from "@/chart/regioes";
 import {
   calcularEntalpia,
   entalpiaParaW,
@@ -46,6 +47,8 @@ export interface ChartScene {
   /** Vazio quando os pontos não vieram de um processo; aí eles são ligados por reta. */
   segments: ProcessSegment[];
   probe: ProbeState | null;
+  /** Liga o fundo colorido das 4 regiões da estratégia otimizada — só na carta otimizada. */
+  mostrarRegioes?: boolean;
 }
 
 /** Cor por tipo de etapa: a carta passa a dizer QUAL equipamento fez cada trecho. */
@@ -69,6 +72,9 @@ const ROTULOS_ETAPA: Record<ProcessSegment["tipo"], string> = {
 export function renderChart(ctx: CanvasRenderingContext2D, scene: ChartScene): void {
   ctx.clearRect(0, 0, chartConfig.width, chartConfig.height);
   desenharFundo(ctx);
+  if (scene.mostrarRegioes) {
+    desenharFundoRegioes(ctx);
+  }
   desenharEixosEGrade(ctx, scene.layers);
   desenharCurvaSaturacao(ctx);
   desenharIsolinhasUmidadeRelativa(ctx, scene.layers);

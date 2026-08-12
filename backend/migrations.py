@@ -436,6 +436,14 @@ CREATE TABLE IF NOT EXISTS desvios_processo (
 CREATE INDEX IF NOT EXISTS idx_desvios_processo ON desvios_processo (processo_id);
 """
 
+# A carta otimizada troca o alvo de entalpia da 1ª etapa por região (docs anexados ao
+# pedido): zonas secas (W1 < w_saida) usam este alvo separado; zonas úmidas continuam
+# usando `entalpia_alvo`, que já existe. O resto da cadeia (umidificar/desumidificar até
+# w_saida, aquecer até tbs_final) é o mesmo `resolver_processo` de sempre — só o alvo muda.
+_V10_ENTALPIA_ALVO_SECO = """
+ALTER TABLE setpoints ADD COLUMN entalpia_alvo_seco REAL NOT NULL DEFAULT 28.0;
+"""
+
 MIGRACOES: list[tuple[int, str]] = [
     (1, _V1_ESTRUTURA_INICIAL),
     (2, _V2_TELEMETRIA_OCR),
@@ -446,6 +454,7 @@ MIGRACOES: list[tuple[int, str]] = [
     (7, _V7_VIGILANCIA_E_CAPTURA),
     (8, _V8_AUTENTICACAO),
     (9, _V9_DESVIOS_E_DELTA_H),
+    (10, _V10_ENTALPIA_ALVO_SECO),
 ]
 
 

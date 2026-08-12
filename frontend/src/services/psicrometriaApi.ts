@@ -124,6 +124,19 @@ export async function calcularProcesso(payload: ProcessoInput): Promise<Processo
 }
 
 /**
+ * A carta otimizada para o mesmo P1: troca o alvo de entalpia por região (ver
+ * `entalpia_alvo_seco` nos setpoints) e resolve a mesma cadeia de sempre. Sempre usa os
+ * setpoints gravados — não há override por requisição — e não persiste no histórico.
+ */
+export async function calcularProcessoOtimizado(payload: {
+  tbs: number;
+  ur: number;
+}): Promise<ProcessoResponse> {
+  const { data } = await http.post<ProcessoResponse>("/processo/otimizado", payload);
+  return data;
+}
+
+/**
  * O processo gravado de uma simulação, ou `null` nas anteriores à migração 3 — o histórico
  * tem entradas antigas que nunca tiveram etapas nem kW, e elas ainda precisam abrir.
  */
