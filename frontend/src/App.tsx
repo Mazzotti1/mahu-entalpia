@@ -1,5 +1,6 @@
 import { useState } from "react";
 
+import { ComparacaoPanel } from "@/components/ComparacaoPanel";
 import { EntalpiaSpInput } from "@/components/EntalpiaSpInput";
 import { HistoryPanel } from "@/components/HistoryPanel";
 import { IndicatorPanel } from "@/components/IndicatorPanel";
@@ -8,7 +9,6 @@ import { MahuPanel } from "@/components/MahuPanel";
 import { PropertiesTable } from "@/components/PropertiesTable";
 import { PsychrometricChart } from "@/components/PsychrometricChart";
 import { SetpointsPanel } from "@/components/SetpointsPanel";
-import { ThermalLoadPanel } from "@/components/ThermalLoadPanel";
 import { useAuthStore } from "@/store/useAuthStore";
 import { useChartStoreOtimizada } from "@/store/useChartStore";
 import { useProcessoStore } from "@/store/useProcessoStore";
@@ -40,14 +40,18 @@ function ContaAtual() {
   );
 }
 
+// Descrevem em que zona o ar de ENTRADA caiu, e só isso. Antes traziam o alvo de entalpia
+// de cada região ("aquecer até 28 kJ/kg"), porque era uma tabela de alvos que decidia a
+// carta otimizada. Não é mais: o alvo agora é deduzido (ver `otimizacao.py`), e repetir
+// aqueles números descreveria um algoritmo que saiu do código.
 const ROTULOS_REGIAO: Record<number, string> = {
-  1: "Região 1 (vermelho) — aquecer até 28 kJ/kg + umidificar",
-  2: "Região 2 (laranja) — resfriar até 28 kJ/kg + umidificar",
-  3: "Região 3 (verde) — aquecer até 36 kJ/kg + umidificar/desumidificar",
-  4: "Região 4 (azul) — resfriar até 36 kJ/kg + umidificar/desumidificar",
+  1: "Região 1 (vermelho) — ar de entrada frio e seco",
+  2: "Região 2 (laranja) — ar de entrada quente e seco",
+  3: "Região 3 (verde) — ar de entrada frio e úmido",
+  4: "Região 4 (azul) — ar de entrada quente e úmido",
 };
 
-/** Legenda da Carta Calculada: qual das 4 regiões o P1 atual ocupa. */
+/** Em qual das 4 zonas o ar de entrada caiu. Rótulo, não decisão de cálculo. */
 function LegendaRegiao() {
   const regiao = useProcessoStore((state) => state.regiaoOtimizada);
   if (regiao == null) {
@@ -68,25 +72,27 @@ function LegendaRegiao() {
  * aparelho está pedindo para ver o gráfico maior — deixar o painel empilhado por cima,
  * como acontecia antes, gastava a altura que a rotação tinha acabado de conseguir.
  *
- * No desktop, a sidebar ganha o mesmo tipo de gaveta: as duas cartas (ATUAL e CALCULADA)
+ * No desktop, a sidebar ganha o mesmo tipo de gaveta: as duas cartas (ATUAL e OTIMIZADA)
  * lado a lado precisam do espaço que ela ocupa, então fechá-la também é uma opção aqui —
  * um estado à parte do `painelAberto` de paisagem, para não misturar os dois breakpoints.
  *
- * As duas cartas descrevem a MESMA leitura por caminhos diferentes: a ATUAL encadeia os
- * instrumentos do painel, a CALCULADA encadeia os setpoints. Cada uma leva o seu próprio
- * gasto térmico logo abaixo, porque a diferença entre os dois kW é o assunto da tela.
+ * As duas cartas partem do MESMO ar: a ATUAL encadeia os instrumentos do painel do começo
+ * ao fim; a OTIMIZADA copia os dois primeiros pontos dela — entrada e pré-aquecimento, que
+ * já aconteceram quando a foto foi tirada — e daí em diante segue a rota mais barata até os
+ * setpoints. A comparação logo abaixo é o assunto da tela: a diferença entre as duas é
+ * dinheiro que a operação atual está deixando na mesa.
  */
 export default function App() {
   const [painelAberto, setPainelAberto] = useState(false);
   const [sidebarAbertaDesktop, setSidebarAbertaDesktop] = useState(true);
 
-  const processo = useProcessoStore((state) => state.processo);
   const processoMedido = useProcessoStore((state) => state.processoMedido);
+  const processoOtimizado = useProcessoStore((state) => state.processoOtimizado);
   const entalpiaSpAtual = useProcessoStore((state) => state.entalpiaSpAtual);
-  const entalpiaSpCalculada = useProcessoStore((state) => state.entalpiaSpCalculada);
+  const entalpiaSpOtimizada = useProcessoStore((state) => state.entalpiaSpOtimizada);
   const definirEntalpiaSpAtual = useProcessoStore((state) => state.definirEntalpiaSpAtual);
-  const definirEntalpiaSpCalculada = useProcessoStore(
-    (state) => state.definirEntalpiaSpCalculada,
+  const definirEntalpiaSpOtimizada = useProcessoStore(
+    (state) => state.definirEntalpiaSpOtimizada,
   );
 
   return (
@@ -146,27 +152,21 @@ export default function App() {
             <PsychrometricChart />
           </div>
           <div className="flex min-w-0 flex-1 flex-col">
-            <h3 className="mb-1 text-sm font-semibold text-slate-700">CARTA CALCULADA</h3>
+            <h3 className="mb-1 text-sm font-semibold text-slate-700">CARTA OTIMIZADA</h3>
+            <p className="text-[12px] text-slate-600 paisagem:hidden">
+              Parte dos pontos 1 e 2 da atual; do 3º em diante, a rota de menor custo.
+            </p>
             <LegendaRegiao />
             <EntalpiaSpInput
-              valor={entalpiaSpCalculada}
-              aoConfirmar={(valor) => void definirEntalpiaSpCalculada(valor)}
-              ajuda="Alvo de entalpia desta carta. Muda a cadeia inteira aqui, sem gravar nada nos setpoints da planta. Em branco, volta a escolha automática por região."
+              valor={entalpiaSpOtimizada}
+              aoConfirmar={(valor) => void definirEntalpiaSpOtimizada(valor)}
+              ajuda="Em branco, o algoritmo escolhe o alvo mais barato. Digitar um valor desliga a otimização e simula esse alvo — qualquer um que não seja o ótimo custa mais."
             />
             <PsychrometricChart useStore={useChartStoreOtimizada} mostrarRegioes />
           </div>
         </div>
 
-        <ThermalLoadPanel
-          processo={processoMedido}
-          titulo="Gasto térmico — CARTA ATUAL"
-          legenda="Calculado sobre os estados medidos no painel: o que a planta está de fato gastando."
-        />
-        <ThermalLoadPanel
-          processo={processo}
-          titulo="Gasto térmico — CARTA CALCULADA"
-          legenda="Calculado sobre a cadeia dos setpoints: o que a planta deveria gastar para o mesmo ar de entrada."
-        />
+        <ComparacaoPanel atual={processoMedido} otimizado={processoOtimizado} />
         <PropertiesTable />
       </section>
     </main>

@@ -33,16 +33,25 @@ from backend.services.armazenamento_processo import (
     listar_historico_gasto_termico,
     montar_response,
     para_dominio,
+    para_tarifas,
 )
+from backend.services.custos import Tarifas, calcular_custo
 from backend.services.energia import calcular_balanco
+from backend.services.otimizacao import (
+    custo_evitavel_pre_aquecimento,
+    resolver_processo_otimizado,
+)
 from backend.services.processo import (
     Processo,
     Setpoints,
     classificar_regiao,
     resolver_processo,
-    resolver_processo_otimizado,
 )
-from backend.services.processo_medido import resolver_processo_medido
+from backend.services.processo_medido import (
+    LABEL_ENTRADA,
+    LABEL_PRE_AQUECIMENTO,
+    resolver_processo_medido,
+)
 from backend.services.psicrometria import estado_por_ur
 
 router = APIRouter(prefix="/api", tags=["processo"])
@@ -112,29 +121,29 @@ async def calcular_processo(
 async def calcular_processo_otimizado(
     entrada: ProcessoOtimizadoInput, usuario: Usuario = Depends(usuario_atual)
 ) -> ProcessoResponse:
-    """A carta otimizada para o mesmo P1: escolhe o alvo de entalpia por região e resolve a
-    mesma cadeia de sempre (ver `resolver_processo_otimizado`).
+    """A CARTA OTIMIZADA sem uma leitura de painel por trás — entrada digitada à mão.
 
-    Não persiste: é um comparativo hipotético para a carta, não uma leitura operacional —
-    salvá-lo junto do histórico misturaria os dois no gráfico de gasto térmico.
+    Sem foto não há TT_02, então a otimização começa na própria entrada: é o mesmo algoritmo
+    de `/mahu/processo`, com um ponto a menos. `entalpia_alvo` informado desliga a otimização
+    e usa o alvo digitado, para o campo PID TT04 ENTALPIA (SP) poder simular.
+
+    Não persiste: é um comparativo, não uma leitura operacional.
     """
     setpoints = await ler_setpoints()
     dominio = para_dominio(setpoints)
 
     p1 = estado_por_ur(entrada.tbs, entrada.ur, dominio.pressao_atm)
-    if entrada.entalpia_alvo is None:
-        processo = resolver_processo_otimizado(p1, dominio)
-    else:
-        # PID TT04 ENTALPIA (SP) digitado: o alvo passa a ser o que o usuário informou, em vez
-        # do escolhido por região. `w_saida`/`tbs_final` continuam vindo da rota otimizada —
-        # o campo digitado é UM setpoint, não a configuração inteira da carta.
-        processo = resolver_processo_otimizado(
-            p1, replace(dominio, entalpia_alvo=entrada.entalpia_alvo, entalpia_alvo_seco=entrada.entalpia_alvo)
-        )
-
+    processo = resolver_processo_otimizado(
+        p1, None, dominio, entalpia_alvo=entrada.entalpia_alvo
+    )
     balanco = calcular_balanco(processo)
 
-    return montar_response(processo, balanco, regiao=classificar_regiao(p1))
+    return montar_response(
+        processo,
+        balanco,
+        regiao=classificar_regiao(p1),
+        custo=calcular_custo(balanco, para_tarifas(setpoints)),
+    )
 
 
 @router.get("/simulacao/{simulacao_id}/processo", response_model=ProcessoResponse)
@@ -160,20 +169,47 @@ def _delta_h_entalpia(desvios: list[Desvio]) -> float | None:
     )
 
 
-def _montar_carta_atual(
-    medidos: dict[str, float], dominio: Setpoints
-) -> ProcessoResponse | None:
-    """A cadeia medida do painel, já com o gasto térmico dela. `None` sem ar de entrada.
+def _com_custo(
+    processo: Processo, tarifas: Tarifas, **extras
+) -> ProcessoResponse:
+    """Resposta de uma cadeia qualquer, sempre com o gasto já convertido em reais."""
+    balanco = calcular_balanco(processo)
+    return montar_response(
+        processo, balanco, custo=calcular_custo(balanco, tarifas), **extras
+    )
 
-    Os pontos vão marcados como `lido_digitado` em bloco: nesta carta nenhum deles foi
-    calculado a partir de setpoint, que é a diferença inteira entre as duas cartas.
+
+def _montar_cartas_da_leitura(
+    medidos: dict[str, float], dominio: Setpoints, tarifas: Tarifas
+) -> tuple[ProcessoResponse | None, ProcessoResponse | None]:
+    """As cartas ATUAL e OTIMIZADA da mesma leitura. `(None, None)` sem ar de entrada.
+
+    As duas saem juntas porque a otimizada PARTE da atual: os dois primeiros pontos dela são
+    os dois primeiros pontos medidos, e é só do terceiro em diante que o algoritmo decide.
+    Montá-las em lugares separados abriria espaço para elas divergirem na origem.
     """
     processo = resolver_processo_medido(medidos, dominio)
     if processo is None:
-        return None
-    return montar_response(
-        processo, calcular_balanco(processo), fonte_dos_pontos="lido_digitado"
+        return None, None
+
+    # Os pontos da atual vão marcados como `lido_digitado` em bloco: nenhum deles saiu de
+    # setpoint, que é a diferença inteira entre as duas cartas.
+    atual = _com_custo(processo, tarifas, fonte_dos_pontos="lido_digitado")
+
+    entrada = processo.pontos[LABEL_ENTRADA]
+    pre_aquecimento = processo.pontos.get(LABEL_PRE_AQUECIMENTO)
+    otimo = resolver_processo_otimizado(entrada, pre_aquecimento, dominio)
+    otimizado = _com_custo(
+        otimo,
+        tarifas,
+        # Os dois primeiros pontos vieram de instrumento; do terceiro em diante são cálculo.
+        # A marca em bloco não serviria aqui, então cada ponto fica com o padrão de
+        # `_FONTE_POR_LABEL` — e é a legenda da carta que diz de onde a rota veio.
+        custo_evitavel_reais_h=custo_evitavel_pre_aquecimento(
+            entrada, pre_aquecimento, dominio, tarifas
+        ),
     )
+    return atual, otimizado
 
 
 @router.post("/mahu/processo", response_model=ProcessoResponse)
@@ -214,7 +250,7 @@ async def calcular_processo_do_mahu(
     desvios = calcular_desvios(processo, medidos)
     delta_h_entalpia = _delta_h_entalpia(desvios)
 
-    medido = _montar_carta_atual(medidos, dominio)
+    medido, otimizado = _montar_cartas_da_leitura(medidos, dominio, para_tarifas(setpoints))
 
     origem = "manual"
     if campos.leitura_id is not None:
@@ -244,6 +280,8 @@ async def calcular_processo_do_mahu(
         desvios=desvios,
         delta_h_entalpia=delta_h_entalpia,
         medido=medido,
+        otimizado=otimizado,
+        custo=calcular_custo(balanco, para_tarifas(setpoints)),
     )
 
 

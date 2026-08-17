@@ -444,6 +444,23 @@ _V10_ENTALPIA_ALVO_SECO = """
 ALTER TABLE setpoints ADD COLUMN entalpia_alvo_seco REAL NOT NULL DEFAULT 28.0;
 """
 
+# O que a carta otimizada precisa para responder em dinheiro, e não só em kW.
+#
+# kW não se somam: 1 kW de frio e 1 kW de calor custam valores diferentes, porque um passa
+# pelo COP do chiller e o outro pelo rendimento do aquecimento. Sem estes quatro números a
+# comparação entre as duas cartas só pode ser feita em energia — e é em dinheiro que a
+# decisão de mexer na planta é tomada.
+#
+# Os defaults são de ordem de grandeza, não da instalação: quem opera ajusta no painel de
+# setpoints. Ficam junto dos setpoints porque são configuração da planta, uma linha só,
+# compartilhada por todos os celulares.
+_V11_TARIFAS = """
+ALTER TABLE setpoints ADD COLUMN preco_kwh REAL NOT NULL DEFAULT 0.75;
+ALTER TABLE setpoints ADD COLUMN cop_refrigeracao REAL NOT NULL DEFAULT 3.5;
+ALTER TABLE setpoints ADD COLUMN rendimento_aquecimento REAL NOT NULL DEFAULT 0.95;
+ALTER TABLE setpoints ADD COLUMN preco_agua_m3 REAL NOT NULL DEFAULT 12.0;
+"""
+
 MIGRACOES: list[tuple[int, str]] = [
     (1, _V1_ESTRUTURA_INICIAL),
     (2, _V2_TELEMETRIA_OCR),
@@ -455,6 +472,7 @@ MIGRACOES: list[tuple[int, str]] = [
     (8, _V8_AUTENTICACAO),
     (9, _V9_DESVIOS_E_DELTA_H),
     (10, _V10_ENTALPIA_ALVO_SECO),
+    (11, _V11_TARIFAS),
 ]
 
 

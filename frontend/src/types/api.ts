@@ -113,6 +113,15 @@ export interface Setpoints {
   vazao_m3h: number;
   /** Pressão atmosférica em Pa — não em kPa. */
   pressao_atm: number;
+
+  /** R$ por kWh elétrico. */
+  preco_kwh: number;
+  /** kW térmicos removidos por kW elétrico consumido pelo chiller. */
+  cop_refrigeracao: number;
+  /** 0..1. Resistência elétrica fica perto de 1; caldeira, bem abaixo. */
+  rendimento_aquecimento: number;
+  /** R$ por m³ de água de umidificação. */
+  preco_agua_m3: number;
 }
 
 /**
@@ -217,6 +226,36 @@ export interface ProcessoResponse {
    * `null` quando não houve leitura de painel por trás (entrada manual, histórico).
    */
   medido: ProcessoResponse | null;
+  /**
+   * A CARTA OTIMIZADA: a rota mais barata a partir dos DOIS primeiros pontos medidos. Vem
+   * na mesma resposta que `medido` porque parte dele — os dois primeiros pontos das duas
+   * cartas são o mesmo par de instrumentos.
+   */
+  otimizado: ProcessoResponse | null;
+  /** O gasto desta cadeia em energia elétrica e em reais. */
+  custo: CustoProcesso | null;
+  /**
+   * R$/h que o pré-aquecimento custa somando serpentina quente e chiller — economia que
+   * está FORA do alcance da carta otimizada, já que ela parte do ar pré-aquecido. Só a
+   * cadeia otimizada preenche.
+   */
+  custo_evitavel_reais_h: number | null;
+}
+
+/**
+ * O gasto térmico convertido em dinheiro.
+ *
+ * kW térmico não é kW elétrico: o frio passa pelo COP do chiller, o calor pelo rendimento
+ * do aquecimento. Somar os dois em kW térmico trataria como iguais duas coisas que a conta
+ * de luz cobra diferente — por isso a comparação entre as cartas acontece aqui.
+ */
+export interface CustoProcesso {
+  energia_refrigeracao_kw: number;
+  energia_aquecimento_kw: number;
+  energia_total_kw: number;
+  reais_por_hora: number;
+  reais_por_dia: number;
+  reais_por_mes: number;
 }
 
 /** Rótulos dos pontos da CARTA ATUAL — são nomes de campo do painel, não P1..P5. */

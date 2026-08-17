@@ -193,14 +193,27 @@ def de_json(bruto: str, *, id: int | None = None) -> PerfilOCR:
         raise ValueError("Configuração de perfil precisa ser um objeto JSON.")
 
     def caixas(chave: str, padrao: dict) -> dict[str, tuple[int, int, int, int]]:
+        """As caixas gravadas SOBRE as do código, campo a campo.
+
+        O merge é por CHAVE, e não pelo dicionário inteiro. A diferença só aparece no dia em
+        que um campo novo entra em `CAMPOS`: o perfil gravado antes dele não o conhece, e
+        substituir o dicionário inteiro devolveria uma configuração sem a ROI do campo novo.
+        `mahu_ocr` indexa `perfil.rois[campo.key]` para todo campo, então isso vira KeyError —
+        e a API responde 500 a toda foto até alguém regravar o perfil à mão.
+
+        Foi exatamente o que aconteceu ao acrescentar `tt02`, `mt_tt_mahu_21` e
+        `tt04_entalpia_sp`: o perfil semeado antes deles continuou ativo e derrubou a leitura.
+        Com o merge por chave, um campo novo nasce com a ROI do código e o perfil gravado
+        segue mandando em tudo que ele de fato configurou.
+        """
         lidas = {
             key: tuple(int(coordenada) for coordenada in valor)
-            for key, valor in config.get(chave, padrao).items()
+            for key, valor in config.get(chave, {}).items()
         }
         invalidas = [key for key, caixa in lidas.items() if len(caixa) != 4]
         if invalidas:
             raise ValueError(f"{chave} com formato inválido: {', '.join(sorted(invalidas))}.")
-        return lidas  # type: ignore[return-value]
+        return {**padrao, **lidas}  # type: ignore[return-value]
 
     rois = caixas("rois", ROIS_PADRAO)
 

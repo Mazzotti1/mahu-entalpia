@@ -9,10 +9,11 @@ significado de todo o histórico.
 from __future__ import annotations
 
 import json
-from dataclasses import asdict
+from dataclasses import asdict, fields
 
 from backend.database import get_db
 from backend.models import (
+    CustoResponse,
     DesvioResponse,
     EtapaResponse,
     GastoTermicoHistoricoItem,
@@ -22,6 +23,7 @@ from backend.models import (
     SetpointsInput,
     TotaisProcessoResponse,
 )
+from backend.services.custos import Custo, Tarifas
 from backend.services.desvios import Desvio
 from backend.services.energia import BalancoTermico
 from backend.services.processo import Processo, Setpoints
@@ -33,7 +35,16 @@ _CAMPOS_SETPOINTS = ("w_saida", "tbs_final", "entalpia_alvo", "vazao_m3h", "pres
 # `processos` guarda a cópia usada em cada execução (`_CAMPOS_SETPOINTS` acima) e nunca
 # recebeu essa coluna: a carta otimizada não persiste corrida nenhuma ali, então não há
 # histórico dela para reconstruir.
-_CAMPOS_SETPOINTS_CONFIG = _CAMPOS_SETPOINTS + ("entalpia_alvo_seco",)
+_CAMPOS_SETPOINTS_CONFIG = _CAMPOS_SETPOINTS + (
+    "entalpia_alvo_seco",
+    # Tarifas: também só na configuração vigente. Não são psicrometria — não mudam ponto
+    # nenhum — então recalcular o custo de um processo antigo com a tarifa de hoje é o
+    # comportamento certo, e guardá-las por execução só criaria histórico para divergir.
+    "preco_kwh",
+    "cop_refrigeracao",
+    "rendimento_aquecimento",
+    "preco_agua_m3",
+)
 
 # Só P1 vem direto do painel (TT01+MT_01); P2..P5 são a cadeia calculada dos setpoints
 # (decisão B). Ver o comentário de `PontoProcessoResponse.fonte`.
@@ -41,7 +52,31 @@ _FONTE_POR_LABEL = {"P1": "lido_digitado"}
 
 
 def para_dominio(setpoints: SetpointsInput) -> Setpoints:
-    return Setpoints(**setpoints.model_dump())
+    """Só o que é psicrometria. As tarifas viajam no mesmo modelo mas não entram no motor.
+
+    O filtro por nome de campo do dataclass, em vez de um `model_dump()` direto, é o que
+    permite acrescentar configuração não-física ao painel de setpoints sem que ela chegue a
+    `processo.py` como argumento inesperado.
+    """
+    campos = {campo.name for campo in fields(Setpoints)}
+    return Setpoints(**{k: v for k, v in setpoints.model_dump().items() if k in campos})
+
+
+def para_tarifas(setpoints: SetpointsInput) -> Tarifas:
+    """A outra metade do mesmo modelo: o que converte kW em reais."""
+    campos = {campo.name for campo in fields(Tarifas)}
+    return Tarifas(**{k: v for k, v in setpoints.model_dump().items() if k in campos})
+
+
+def custo_para_response(custo: Custo) -> CustoResponse:
+    return CustoResponse(
+        energia_refrigeracao_kw=round(custo.energia_refrigeracao_kw, 2),
+        energia_aquecimento_kw=round(custo.energia_aquecimento_kw, 2),
+        energia_total_kw=round(custo.energia_total_kw, 2),
+        reais_por_hora=round(custo.reais_por_hora, 2),
+        reais_por_dia=round(custo.reais_por_dia, 2),
+        reais_por_mes=round(custo.reais_por_mes, 2),
+    )
 
 
 def ponto_para_response(
@@ -77,6 +112,9 @@ def montar_response(
     delta_h_entalpia: float | None = None,
     regiao: int | None = None,
     medido: ProcessoResponse | None = None,
+    otimizado: ProcessoResponse | None = None,
+    custo: Custo | None = None,
+    custo_evitavel_reais_h: float | None = None,
     fonte_dos_pontos: str | None = None,
 ) -> ProcessoResponse:
     etapas = [
@@ -133,6 +171,11 @@ def montar_response(
         delta_h_entalpia=round(delta_h_entalpia, 2) if delta_h_entalpia is not None else None,
         regiao=regiao,
         medido=medido,
+        otimizado=otimizado,
+        custo=custo_para_response(custo) if custo is not None else None,
+        custo_evitavel_reais_h=(
+            round(custo_evitavel_reais_h, 2) if custo_evitavel_reais_h is not None else None
+        ),
     )
 
 

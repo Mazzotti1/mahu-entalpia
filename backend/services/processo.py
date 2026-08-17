@@ -16,7 +16,7 @@ muda tanto o kW quanto o desenho na carta.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from typing import Literal
 
 from backend.services.psicrometria import (
@@ -255,42 +255,18 @@ def resolver_processo(entrada: Estado, setpoints: Setpoints) -> Processo:
 
 # --- Carta otimizada -----------------------------------------------------------------
 #
-# A estratégia por região (docs anexados ao pedido) muda só o alvo de entalpia da 1ª
-# etapa: zonas secas (P1 mais seco que o setpoint de saída) usam `entalpia_alvo_seco`;
-# zonas úmidas usam o `entalpia_alvo` que já existe. `resolver_processo` já resolve os
-# dois casos (umidificar se W2 ficar abaixo do alvo, desumidificar se ficar acima) — não
-# há física nova aqui, só a escolha de qual alvo entra na função de sempre.
+# A estratégia por região saiu daqui. Ela escolhia entre dois alvos de entalpia fixos
+# (`entalpia_alvo` e `entalpia_alvo_seco`) conforme a zona em que P1 caía — uma tabela, não
+# uma otimização. `otimizacao.py` a substituiu por uma DEDUÇÃO: o alvo mais barato é sempre
+# a entalpia do ar saturado em `w_saida`, nos dois ramos, e não precisa de tabela nenhuma.
 #
-# `w_saida`/`tbs_final` da carta otimizada são fixos (7,30 g/kg / 20 °C), independentes do
-# que estiver configurado nos setpoints da carta atual.
+# `entalpia_alvo_seco` continua na configuração porque a coluna existe no banco e as
+# migrações são append-only. Nenhum cálculo a lê mais.
+#
+# `classificar_regiao` ficou: ela nunca decidiu nada, só rotulava a carta para a legenda.
 
 W_SAIDA_OTIMIZADO = 7.30
 TBS_FINAL_OTIMIZADO = 20.0
-
-
-def entalpia_alvo_otimizada(p1: Estado, setpoints: Setpoints) -> float:
-    """Qual alvo de entalpia usar na 1ª etapa da carta otimizada.
-
-    P1 mais seco que o setpoint de saída precisa ganhar umidade: um alvo de entalpia mais
-    baixo (28 kJ/kg) é o que, depois de umidificar até saturar, chega exatamente em
-    `w_saida`. P1 já úmido demais precisa perder umidade, e é o `entalpia_alvo` (36,2 kJ/kg)
-    já configurado que produz a saturação acima de `w_saida`, disparando a etapa de
-    desumidificação em `resolver_processo`.
-    """
-    return (
-        setpoints.entalpia_alvo_seco if p1.w < W_SAIDA_OTIMIZADO else setpoints.entalpia_alvo
-    )
-
-
-def resolver_processo_otimizado(p1: Estado, setpoints: Setpoints) -> Processo:
-    """A carta otimizada é a mesma cadeia de sempre, só com o alvo certo por região."""
-    setpoints_otimizados = replace(
-        setpoints,
-        entalpia_alvo=entalpia_alvo_otimizada(p1, setpoints),
-        w_saida=W_SAIDA_OTIMIZADO,
-        tbs_final=TBS_FINAL_OTIMIZADO,
-    )
-    return resolver_processo(p1, setpoints_otimizados)
 
 
 def classificar_regiao(p1: Estado) -> int | None:

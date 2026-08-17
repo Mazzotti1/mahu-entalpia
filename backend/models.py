@@ -125,6 +125,17 @@ class SetpointsInput(BaseModel):
     # porque a especificação original pedia "101325 kPa" — mil atmosferas.
     pressao_atm: float = Field(101325.0, ge=PRESSAO_MINIMA, le=PRESSAO_MAXIMA)
 
+    # --- Tarifas: o que converte kW em reais -------------------------------------------
+    # Não entram em cálculo psicrométrico nenhum. Existem porque 1 kW de frio e 1 kW de
+    # calor custam diferente (um passa pelo COP, o outro pelo rendimento), e é em dinheiro
+    # que a comparação entre a Carta Atual e a Carta Otimizada decide alguma coisa.
+    preco_kwh: float = Field(0.75, ge=0.0, le=100.0)
+    # kW térmicos removidos por kW elétrico consumido pelo chiller.
+    cop_refrigeracao: float = Field(3.5, gt=0.0, le=20.0)
+    # 0..1. Resistência elétrica fica perto de 1; caldeira, bem abaixo.
+    rendimento_aquecimento: float = Field(0.95, gt=0.0, le=1.0)
+    preco_agua_m3: float = Field(12.0, ge=0.0, le=1000.0)
+
 
 class PontoProcessoResponse(BaseModel):
     label: str
@@ -175,6 +186,17 @@ class TotaisProcessoResponse(BaseModel):
 class ProcessoAviso(BaseModel):
     codigo: str
     mensagem: str
+
+
+class CustoResponse(BaseModel):
+    """O gasto térmico de uma cadeia convertido em elétrico e em reais (`custos.py`)."""
+
+    energia_refrigeracao_kw: float
+    energia_aquecimento_kw: float
+    energia_total_kw: float
+    reais_por_hora: float
+    reais_por_dia: float
+    reais_por_mes: float
 
 
 class ProcessoInput(BaseModel):
@@ -240,6 +262,17 @@ class ProcessoResponse(BaseModel):
     # requisições abriria a janela em que a tela mostra uma carta de uma foto e a outra de
     # outra. `None` quando não há leitura de painel por trás (entrada manual, histórico).
     medido: "ProcessoResponse | None" = None
+    # A CARTA OTIMIZADA: a rota mais barata a partir dos dois primeiros pontos MEDIDOS
+    # (`otimizacao.py`). Vem na mesma resposta e pelo mesmo motivo que `medido` — as três
+    # cadeias descrevem a mesma foto.
+    otimizado: "ProcessoResponse | None" = None
+    # O gasto desta cadeia em elétrico e em reais. `None` só nos processos lidos do
+    # histórico, gravados antes de existirem tarifas.
+    custo: CustoResponse | None = None
+    # R$/h que o pré-aquecimento custa somando serpentina quente e chiller — a economia que
+    # está FORA do alcance da carta otimizada, porque ela parte do ar já pré-aquecido.
+    # Só a cadeia otimizada preenche.
+    custo_evitavel_reais_h: float | None = None
 
 
 # `medido` é do próprio tipo que está sendo definido: o modelo só fica utilizável depois que
