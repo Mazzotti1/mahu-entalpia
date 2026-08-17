@@ -75,7 +75,10 @@ JANELA_CONTINUIDADE_MIN = _env_float("MAHU_JANELA_CONTINUIDADE_MIN", 15.0)
 SALTO_TEMPERATURA = _env_float("MAHU_SALTO_TEMPERATURA", 2.0)
 SALTO_UMIDADE = _env_float("MAHU_SALTO_UMIDADE", 5.0)
 
-_TEMPERATURAS = ("tt01", "tt04", "tt06", "tt07")
+# O PV do sensor de umidade absoluta da entrada e o par TT01/MT_01 descrevem o mesmo estado.
+TOLERANCIA_W_ENTRADA = _env_float("MAHU_TOLERANCIA_W_ENTRADA", 0.05)
+
+_TEMPERATURAS = ("tt01", "tt02", "tt04", "tt06", "tt07")
 _UMIDADES = ("mt_01", "mt07")
 
 
@@ -93,6 +96,7 @@ def validar_leitura(
     _validar_cadeia_de_resfriamento(valores, avisos)
     _validar_saturacao_em_p2(valores, avisos)
     _validar_umd_abs_informativo(valores, avisos)
+    _validar_w_de_entrada(valores, avisos)
     _validar_entalpia_informativa(valores, avisos)
     _validar_continuidade(valores, anterior, avisos)
     return avisos
@@ -123,7 +127,10 @@ def _validar_umidade_de_saida(valores: Mapping[str, float], avisos: list[Aviso])
 
 
 def _validar_cadeia_de_resfriamento(valores: Mapping[str, float], avisos: list[Aviso]) -> None:
-    for antes, depois in (("tt01", "tt04"), ("tt04", "tt06")):
+    # TT_02 entra pelo lado do resfriamento apenas: entre TT01 e TT_02 está a serpentina de
+    # PRÉ-AQUECIMENTO, e ali o ar esquenta. Cobrar TT01 > TT_02 acusaria de erro a única
+    # etapa do MAHU em que a temperatura sobe.
+    for antes, depois in (("tt01", "tt04"), ("tt02", "tt04"), ("tt04", "tt06")):
         if not _tem(valores, antes, depois):
             continue
         if valores[antes] > valores[depois]:
@@ -177,6 +184,33 @@ def _validar_umd_abs_informativo(valores: Mapping[str, float], avisos: list[Avis
                 f"{w:.2f} g/kg. Um dos três foi lido errado."
             ),
             campos=("umd_abs_pv", "tt07", "mt07"),
+        )
+    )
+
+
+def _validar_w_de_entrada(valores: Mapping[str, float], avisos: list[Aviso]) -> None:
+    """MT TT MAHU 2.1 contra o W que TT01 e MT_01 implicam.
+
+    Vale o mesmo que o validador da saída, e na ponta que mais importa: TT01+MT_01
+    posicionam o primeiro ponto das DUAS cartas, então um erro de leitura ali desloca tudo o
+    que vem depois. O sensor de umidade absoluta é a única terceira opinião disponível sobre
+    esse estado.
+    """
+    if not _tem(valores, "mt_tt_mahu_21", "tt01", "mt_01"):
+        return
+    w = umidade_absoluta(valores["tt01"], valores["mt_01"])
+    lido = valores["mt_tt_mahu_21"]
+    if abs(w - lido) <= TOLERANCIA_W_ENTRADA * max(w, lido):
+        return
+    avisos.append(
+        Aviso(
+            codigo="w_entrada_divergente",
+            mensagem=(
+                f"O sensor MT TT MAHU 2.1 lê {lido:.2f} g/kg, mas TT01 e MT_01 dão "
+                f"{w:.2f} g/kg. Como TT01 e MT_01 posicionam o primeiro ponto das duas "
+                "cartas, confira os três antes de aplicar."
+            ),
+            campos=("mt_tt_mahu_21", "tt01", "mt_01"),
         )
     )
 

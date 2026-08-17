@@ -1,6 +1,5 @@
 import { formatarNumero } from "@/lib/format";
-import { useProcessoStore } from "@/store/useProcessoStore";
-import type { EtapaProcesso } from "@/types/api";
+import type { EtapaProcesso, ProcessoResponse } from "@/types/api";
 
 const ROTULO_ETAPA: Record<EtapaProcesso["tipo"], string> = {
   resfriamento_sensivel: "Resfriamento sensível",
@@ -39,9 +38,23 @@ function Destaque({
   );
 }
 
-export function ThermalLoadPanel() {
-  const processo = useProcessoStore((state) => state.processo);
+interface ThermalLoadPanelProps {
+  /** Qual das duas cadeias este painel resume. `null` esconde o painel inteiro. */
+  processo: ProcessoResponse | null;
+  titulo: string;
+  /** Uma linha explicando de onde vieram os pontos desta cadeia. */
+  legenda: string;
+}
 
+/**
+ * O gasto térmico de UMA das duas cartas.
+ *
+ * O painel é o mesmo para as duas porque a conta é a mesma — `energia.calcular_balanco` roda
+ * igual sobre qualquer cadeia. O que muda é a origem dos pontos: a Carta Atual encadeia o
+ * que os instrumentos mediram, a Carta Calculada o que os setpoints impõem. Ver os dois kW
+ * lado a lado é o que separa "a planta está gastando isto" de "deveria gastar aquilo".
+ */
+export function ThermalLoadPanel({ processo, titulo, legenda }: ThermalLoadPanelProps) {
   if (!processo) {
     return null;
   }
@@ -50,7 +63,8 @@ export function ThermalLoadPanel() {
 
   return (
     <section className="mt-4 max-w-[1200px] rounded-[10px] border border-gray-200 bg-white p-3 paisagem:hidden">
-      <h3 className="mb-2.5 text-lg font-semibold">Gasto térmico</h3>
+      <h3 className="text-lg font-semibold">{titulo}</h3>
+      <p className="mb-2.5 text-[12px] text-slate-500">{legenda}</p>
 
       {avisos.length > 0 && (
         <ul className="mb-3 space-y-1">

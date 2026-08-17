@@ -1,6 +1,5 @@
 import { http, isHttpStatus } from "@/lib/http";
 import type {
-  GastoTermicoHistoricoResponse,
   MahuCamposInput,
   MahuEnquadramento,
   MahuLeituraResponse,
@@ -124,13 +123,16 @@ export async function calcularProcesso(payload: ProcessoInput): Promise<Processo
 }
 
 /**
- * A carta otimizada para o mesmo P1: troca o alvo de entalpia por região (ver
- * `entalpia_alvo_seco` nos setpoints) e resolve a mesma cadeia de sempre. Sempre usa os
- * setpoints gravados — não há override por requisição — e não persiste no histórico.
+ * A CARTA CALCULADA para o mesmo P1: resolve a cadeia de sempre com o alvo de entalpia
+ * escolhido por região (`entalpia_alvo_seco` nos setpoints). Não persiste no histórico.
+ *
+ * `entalpia_alvo` é a digitação individual do PID TT04 ENTALPIA (SP): informado, ele
+ * substitui a escolha por região só nesta carta, sem regravar a configuração da planta.
  */
 export async function calcularProcessoOtimizado(payload: {
   tbs: number;
   ur: number;
+  entalpia_alvo?: number | null;
 }): Promise<ProcessoResponse> {
   const { data } = await http.post<ProcessoResponse>("/processo/otimizado", payload);
   return data;
@@ -150,16 +152,6 @@ export async function buscarProcessoDaSimulacao(id: number): Promise<ProcessoRes
     }
     throw error;
   }
-}
-
-/** Gasto térmico e Delta H de cada leitura, para o gráfico e a exportação em planilha. */
-export async function buscarHistoricoGastoTermico(
-  limite = 200,
-): Promise<GastoTermicoHistoricoResponse> {
-  const { data } = await http.get<GastoTermicoHistoricoResponse>("/mahu/historico/gasto-termico", {
-    params: { limite },
-  });
-  return data;
 }
 
 export async function buscarSetpoints(): Promise<Setpoints> {

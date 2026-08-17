@@ -188,11 +188,17 @@ class ProcessoInput(BaseModel):
 
 
 class ProcessoOtimizadoInput(BaseModel):
-    """Ar de entrada para a carta otimizada. Sempre usa os setpoints gravados — não há
-    override por requisição, porque a otimização depende deles (entalpia_alvo_seco)."""
+    """Ar de entrada para a Carta Calculada.
+
+    Os setpoints são os gravados, com uma exceção: `entalpia_alvo` pode vir na requisição.
+    É a digitação individual do PID TT04 ENTALPIA (SP) — o usuário testa um alvo nesta carta
+    sem gravar nada, e a configuração da planta continua sendo a de `/setpoints`. Ausente, a
+    escolha por região (`entalpia_alvo_seco`) volta a mandar.
+    """
 
     tbs: float = Field(ge=-10.0, le=60.0)
     ur: float = Field(gt=0.0, le=100.0)
+    entalpia_alvo: float | None = Field(default=None, ge=0.0, le=120.0)
 
 
 class DesvioResponse(BaseModel):
@@ -229,6 +235,16 @@ class ProcessoResponse(BaseModel):
     # informativo para legenda/rótulo da carta. `None` fora da rota otimizada, ou quando P1
     # não cai em nenhuma das 4 faixas descritas.
     regiao: int | None = None
+    # A cadeia montada só com o que o painel mostra — a Carta Atual. Vem junto da calculada,
+    # na mesma resposta, porque as duas descrevem a MESMA leitura: buscá-las em duas
+    # requisições abriria a janela em que a tela mostra uma carta de uma foto e a outra de
+    # outra. `None` quando não há leitura de painel por trás (entrada manual, histórico).
+    medido: "ProcessoResponse | None" = None
+
+
+# `medido` é do próprio tipo que está sendo definido: o modelo só fica utilizável depois que
+# a classe existe e a referência adiada pode ser resolvida.
+ProcessoResponse.model_rebuild()
 
 
 class GastoTermicoHistoricoItem(BaseModel):
@@ -340,6 +356,16 @@ class MahuCamposInput(BaseModel):
     # qualquer outro campo — que é o que faltava para O6.4.
     umd_abs_pv: float | None = Field(default=None, ge=0.0, le=30.0)
     tt04_entalpia_pv: float | None = Field(default=None, ge=0.0, le=120.0)
+    # Umidade absoluta do ar de entrada, medida pelo sensor do rodapé. Não posiciona ponto
+    # (quem posiciona é TT01+MT_01); entra como confirmação do mesmo estado.
+    mt_tt_mahu_21: float | None = Field(default=None, ge=0.0, le=30.0)
+    # Saída do pré-aquecimento. Posiciona o segundo ponto da Carta Atual, junto com o W da
+    # entrada — a serpentina aquece sem acrescentar água.
+    tt02: float | None = Field(default=None, ge=-10.0, le=60.0)
+    # O SETPOINT de entalpia digitado/lido. Presente, substitui `entalpia_alvo` na cadeia
+    # calculada desta leitura: é a "digitação individual" do campo, que deixa simular um alvo
+    # sem reconfigurar a planta inteira em `/setpoints`.
+    tt04_entalpia_sp: float | None = Field(default=None, ge=0.0, le=120.0)
     # Liga o que foi aplicado ao que tinha sido sugerido. Ausente quando os valores foram
     # digitados sem uma leitura de OCR por trás.
     leitura_id: int | None = None

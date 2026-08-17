@@ -6,6 +6,8 @@ histórico e o SSE já usam; aqui é o processo encadeado, que precisa dos setpo
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from fastapi import APIRouter, Depends, HTTPException
 
 from backend.models import (
@@ -35,10 +37,12 @@ from backend.services.armazenamento_processo import (
 from backend.services.energia import calcular_balanco
 from backend.services.processo import (
     Processo,
+    Setpoints,
     classificar_regiao,
     resolver_processo,
     resolver_processo_otimizado,
 )
+from backend.services.processo_medido import resolver_processo_medido
 from backend.services.psicrometria import estado_por_ur
 
 router = APIRouter(prefix="/api", tags=["processo"])
@@ -118,7 +122,16 @@ async def calcular_processo_otimizado(
     dominio = para_dominio(setpoints)
 
     p1 = estado_por_ur(entrada.tbs, entrada.ur, dominio.pressao_atm)
-    processo = resolver_processo_otimizado(p1, dominio)
+    if entrada.entalpia_alvo is None:
+        processo = resolver_processo_otimizado(p1, dominio)
+    else:
+        # PID TT04 ENTALPIA (SP) digitado: o alvo passa a ser o que o usuário informou, em vez
+        # do escolhido por região. `w_saida`/`tbs_final` continuam vindo da rota otimizada —
+        # o campo digitado é UM setpoint, não a configuração inteira da carta.
+        processo = resolver_processo_otimizado(
+            p1, replace(dominio, entalpia_alvo=entrada.entalpia_alvo, entalpia_alvo_seco=entrada.entalpia_alvo)
+        )
+
     balanco = calcular_balanco(processo)
 
     return montar_response(processo, balanco, regiao=classificar_regiao(p1))
@@ -147,18 +160,46 @@ def _delta_h_entalpia(desvios: list[Desvio]) -> float | None:
     )
 
 
+def _montar_carta_atual(
+    medidos: dict[str, float], dominio: Setpoints
+) -> ProcessoResponse | None:
+    """A cadeia medida do painel, já com o gasto térmico dela. `None` sem ar de entrada.
+
+    Os pontos vão marcados como `lido_digitado` em bloco: nesta carta nenhum deles foi
+    calculado a partir de setpoint, que é a diferença inteira entre as duas cartas.
+    """
+    processo = resolver_processo_medido(medidos, dominio)
+    if processo is None:
+        return None
+    return montar_response(
+        processo, calcular_balanco(processo), fonte_dos_pontos="lido_digitado"
+    )
+
+
 @router.post("/mahu/processo", response_model=ProcessoResponse)
 async def calcular_processo_do_mahu(
     campos: MahuCamposInput, usuario: Usuario = Depends(usuario_atual)
 ) -> ProcessoResponse:
-    """Resolve o processo a partir da leitura do painel já conferida.
+    """Resolve as DUAS cadeias da mesma leitura do painel já conferida.
 
-    Só TT01 e MT_01 alimentam o cálculo: são o ar de entrada. TT_04, TT_06, TT07 e MT07
-    passam a ser conferência — o processo em si vem dos setpoints (decisões B e D) — e
-    voltam como `desvios`, que é o que diz se a planta está cumprindo o controle.
+    A **Carta Calculada** (resposta principal) sai dos setpoints: só TT01 e MT_01 a
+    alimentam, porque são o ar de entrada, e os demais campos viram `desvios` — decisões B
+    e D. É o processo que a planta deveria estar fazendo.
+
+    A **Carta Atual** (`medido`) sai só do painel: cada ponto é posicionado pelos
+    instrumentos daquele trecho do MAHU, sem nenhum setpoint no meio. É o processo que a
+    planta está de fato fazendo, e é o que dá sentido a comparar o gasto térmico dos dois.
+
+    Só a calculada é persistida. A medida é derivada inteiramente dos campos gravados na
+    leitura, então guardá-la de novo seria duplicar o mesmo dado em duas tabelas.
     """
     setpoints = await ler_setpoints()
     dominio = para_dominio(setpoints)
+
+    # PID TT04 ENTALPIA (SP) digitado manda no alvo desta execução, sem regravar a
+    # configuração da planta — é a digitação individual do campo.
+    if campos.tt04_entalpia_sp is not None:
+        dominio = replace(dominio, entalpia_alvo=campos.tt04_entalpia_sp)
 
     processo = resolver_processo(
         estado_por_ur(campos.tt01, campos.mt_01, dominio.pressao_atm), dominio
@@ -172,6 +213,8 @@ async def calcular_processo_do_mahu(
     }
     desvios = calcular_desvios(processo, medidos)
     delta_h_entalpia = _delta_h_entalpia(desvios)
+
+    medido = _montar_carta_atual(medidos, dominio)
 
     origem = "manual"
     if campos.leitura_id is not None:
@@ -200,6 +243,7 @@ async def calcular_processo_do_mahu(
         simulacao_id=simulacao.id,
         desvios=desvios,
         delta_h_entalpia=delta_h_entalpia,
+        medido=medido,
     )
 
 

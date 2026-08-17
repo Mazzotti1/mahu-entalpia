@@ -116,9 +116,12 @@ export interface Setpoints {
 }
 
 /**
- * P1 vem de TT01+MT_01, lidos/digitados no painel. P2..P5 são a cadeia calculada a partir
+ * Na CARTA CALCULADA, P1 vem de TT01+MT_01 lidos/digitados no painel e P2..P5 são a cadeia
  * dos setpoints (decisão B) — "calculado" mesmo quando um campo do painel existe para
  * conferir o mesmo estado; essa conferência é o que está em `ProcessoResponse.desvios`.
+ *
+ * Na CARTA ATUAL (`ProcessoResponse.medido`) todo ponto é `lido_digitado`: cada um foi
+ * posicionado por instrumentos do painel, sem setpoint no meio.
  */
 export type FontePonto = "lido_digitado" | "calculado";
 
@@ -208,23 +211,42 @@ export interface ProcessoResponse {
    * legenda. `null` fora da rota otimizada, ou quando P1 não cai em nenhuma das 4 faixas.
    */
   regiao: number | null;
+  /**
+   * A CARTA ATUAL: a mesma leitura montada só com os instrumentos do painel, sem setpoint
+   * nenhum. Vem embutida para as duas cartas na tela descreverem sempre a MESMA foto.
+   * `null` quando não houve leitura de painel por trás (entrada manual, histórico).
+   */
+  medido: ProcessoResponse | null;
 }
 
-/** Uma linha do histórico gasto térmico × Delta H, para o gráfico e a planilha. */
-export interface GastoTermicoHistoricoItem {
-  processo_id: number;
-  simulacao_id: number;
-  /** ISO 8601 em UTC (com sufixo Z). */
-  criado_em: string;
-  q_aquecimento_kw: number;
-  q_refrigeracao_kw: number;
-  gasto_termico_kw: number;
-  delta_h_entalpia: number | null;
-}
+/** Rótulos dos pontos da CARTA ATUAL — são nomes de campo do painel, não P1..P5. */
+export const SLOT_ENTRADA = "TT01";
+export const SLOT_PRE_AQUECIMENTO = "TT_02";
+export const SLOT_PRE_RESFRIAMENTO = "TT_04";
+export const SLOT_POS_UMIDIFICACAO = "TT_06";
+export const SLOT_FINAL = "TT07";
 
-export interface GastoTermicoHistoricoResponse {
-  itens: GastoTermicoHistoricoItem[];
-}
+/**
+ * Em que ponto da CARTA ATUAL cada campo do painel é lido.
+ *
+ * Os desvios voltam do backend rotulados com o ponto da carta CALCULADA (P1..P5), que é
+ * contra quem eles foram medidos. A tabela de propriedades, porém, lista os pontos da carta
+ * ATUAL, cujos rótulos são estes. Sem este mapa o popup de um ponto não acharia desvio
+ * nenhum para mostrar.
+ */
+export const SLOT_POR_CAMPO: Record<string, string> = {
+  mt_01: SLOT_ENTRADA,
+  tt01: SLOT_ENTRADA,
+  mt_tt_mahu_21: SLOT_ENTRADA,
+  tt02: SLOT_PRE_AQUECIMENTO,
+  tt04: SLOT_PRE_RESFRIAMENTO,
+  tt04_entalpia_pv: SLOT_PRE_RESFRIAMENTO,
+  tt04_entalpia_sp: SLOT_PRE_RESFRIAMENTO,
+  tt06: SLOT_POS_UMIDIFICACAO,
+  tt07: SLOT_FINAL,
+  mt07: SLOT_FINAL,
+  umd_abs_pv: SLOT_FINAL,
+};
 
 export interface ProcessoInput {
   tbs: number;
@@ -310,6 +332,15 @@ export interface MahuCamposInput {
    */
   umd_abs_pv?: number | null;
   tt04_entalpia_pv?: number | null;
+  /** Umidade absoluta do ar de entrada. Confere TT01+MT_01; não posiciona ponto. */
+  mt_tt_mahu_21?: number | null;
+  /** Saída do pré-aquecimento. Posiciona o 2º ponto da Carta Atual. */
+  tt02?: number | null;
+  /**
+   * O SETPOINT de entalpia. Presente, substitui `entalpia_alvo` na cadeia calculada desta
+   * leitura — é a digitação individual do campo, que não regrava a configuração da planta.
+   */
+  tt04_entalpia_sp?: number | null;
   /** Liga o aplicado ao sugerido, para o backend rotular o erro de OCR. */
   leitura_id?: number | null;
   /**

@@ -44,7 +44,15 @@ def para_dominio(setpoints: SetpointsInput) -> Setpoints:
     return Setpoints(**setpoints.model_dump())
 
 
-def ponto_para_response(label: str, estado: Estado) -> PontoProcessoResponse:
+def ponto_para_response(
+    label: str, estado: Estado, *, fonte: str | None = None
+) -> PontoProcessoResponse:
+    """`fonte` forçada é para a cadeia MEDIDA, onde todo ponto veio de instrumento.
+
+    Sem ela, `_FONTE_POR_LABEL` marcaria de "calculado" os pontos da Carta Atual — que são
+    exatamente o contrário disso — porque os rótulos de lá são nomes de campo (TT_04, TT_06)
+    e não os P1..P5 da cadeia dos setpoints.
+    """
     return PontoProcessoResponse(
         label=label,
         tbs=round(estado.tbs, 2),
@@ -55,7 +63,7 @@ def ponto_para_response(label: str, estado: Estado) -> PontoProcessoResponse:
         volume_especifico=round(estado.volume_especifico, 4),
         ponto_orvalho=round(estado.ponto_orvalho, 2),
         saturado=estado.saturado,
-        fonte=_FONTE_POR_LABEL.get(label, "calculado"),
+        fonte=fonte or _FONTE_POR_LABEL.get(label, "calculado"),
     )
 
 
@@ -68,6 +76,8 @@ def montar_response(
     desvios: list[Desvio] | None = None,
     delta_h_entalpia: float | None = None,
     regiao: int | None = None,
+    medido: ProcessoResponse | None = None,
+    fonte_dos_pontos: str | None = None,
 ) -> ProcessoResponse:
     etapas = [
         EtapaResponse(
@@ -96,7 +106,8 @@ def montar_response(
         simulacao_id=simulacao_id,
         setpoints=SetpointsInput(**asdict(processo.setpoints)),
         pontos=[
-            ponto_para_response(label, processo.pontos[label]) for label in processo.ordem
+            ponto_para_response(label, processo.pontos[label], fonte=fonte_dos_pontos)
+            for label in processo.ordem
         ],
         etapas=etapas,
         totais=TotaisProcessoResponse(
@@ -121,6 +132,7 @@ def montar_response(
         ],
         delta_h_entalpia=round(delta_h_entalpia, 2) if delta_h_entalpia is not None else None,
         regiao=regiao,
+        medido=medido,
     )
 
 

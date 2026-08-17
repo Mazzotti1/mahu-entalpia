@@ -98,7 +98,10 @@ def _carga_da_etapa(etapa: Etapa, vazao_kg_s: float) -> CargaEtapa:
 
 def calcular_balanco(processo: Processo) -> BalancoTermico:
     """Distribui o gasto térmico entre as etapas e agrega os totais."""
-    entrada = processo.pontos["P1"]
+    # O PRIMEIRO ponto, e não `pontos["P1"]`: a cadeia medida usa os nomes dos campos do
+    # painel (TT01, TT_02, ...) e não tem P1 nenhum. Em ambas as cadeias o primeiro ponto é
+    # o ar de entrada, que é onde a vazão é medida (decisão A).
+    entrada = next(iter(processo.pontos.values()))
     vazao_kg_s = vazao_massica_ar_seco(processo.setpoints.vazao_m3h, entrada)
 
     cargas = [_carga_da_etapa(etapa, vazao_kg_s) for etapa in processo.etapas]

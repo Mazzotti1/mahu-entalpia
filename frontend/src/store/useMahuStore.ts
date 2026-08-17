@@ -30,10 +30,17 @@ const CHAVES_OBRIGATORIAS = [
  * Conferidos e enviados, mas não exigidos. O bloco SP/PV/MV do painel tem 17 px entre
  * linhas e nem toda foto o resolve; bloquear a leitura por causa dele desperdiçaria os seis
  * campos que saíram bem. Quando vêm, viram desvio e entram no corpus como qualquer outro.
+ *
+ * `tt02` e `mt_tt_mahu_21` entram aqui pelo mesmo motivo, e por mais um: as ROIs deles ainda
+ * são estimadas (ver `perfil_ocr.ROIS_PADRAO`). Enquanto não forem medidas contra o corpus,
+ * exigi-los transformaria um recorte mal posicionado em leitura bloqueada.
  */
 const CHAVES_OPCIONAIS = [
   "umd_abs_pv",
   "tt04_entalpia_pv",
+  "tt04_entalpia_sp",
+  "mt_tt_mahu_21",
+  "tt02",
 ] as const satisfies readonly (keyof MahuCamposInput)[];
 
 function montarCampos(
@@ -105,7 +112,15 @@ interface MahuState {
   setStatus: (status: string) => void;
   descartarLeitura: (motivo: MahuMotivoDescarte | null) => void;
   lerImagem: (file: File) => Promise<void>;
-  aplicarConferencia: (valores: Record<string, number>) => Promise<void>;
+  /**
+   * Devolve a mensagem de falha, ou `null` se aplicou.
+   *
+   * O resultado volta a quem chamou em vez de morrer só no `status`: o `status` é desenhado
+   * no TOPO do painel e o botão fica no fim de um formulário de onze campos, que no celular
+   * não cabe na tela. Uma falha anunciada lá em cima, fora do campo de visão de quem acabou
+   * de tocar no botão, é indistinguível de um botão que não faz nada.
+   */
+  aplicarConferencia: (valores: Record<string, number>) => Promise<string | null>;
 }
 
 export const useMahuStore = create<MahuState>((set, get) => ({
@@ -190,8 +205,9 @@ export const useMahuStore = create<MahuState>((set, get) => ({
       Date.now() - get().abertaEm,
     );
     if (!campos) {
-      set({ status: "Preencha todos os campos obrigatórios com valores numéricos." });
-      return;
+      const falha = "Preencha todos os campos obrigatórios com valores numéricos.";
+      set({ status: falha });
+      return falha;
     }
 
     set({ aplicando: true, status: "Resolvendo o processo a partir dos valores conferidos..." });
@@ -209,8 +225,11 @@ export const useMahuStore = create<MahuState>((set, get) => ({
           `Processo atualizado. Refrigeração ${processo.totais.q_refrigeracao_kw.toFixed(1)} kW, ` +
           `aquecimento ${processo.totais.q_aquecimento_kw.toFixed(1)} kW.`,
       });
+      return null;
     } catch (error) {
-      set({ status: `Falha ao aplicar a leitura: ${describeError(error)}` });
+      const falha = `Falha ao aplicar a leitura: ${describeError(error)}`;
+      set({ status: falha });
+      return falha;
     } finally {
       set({ aplicando: false });
     }

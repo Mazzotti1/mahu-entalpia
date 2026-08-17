@@ -4,6 +4,7 @@ import { PontoPopup } from "@/components/PontoPopup";
 import { formatarNumero } from "@/lib/format";
 import { useChartStore } from "@/store/useChartStore";
 import { useProcessoStore } from "@/store/useProcessoStore";
+import { SLOT_POR_CAMPO } from "@/types/api";
 
 const COLUNAS = [
   "Ponto",
@@ -93,7 +94,13 @@ export function PropertiesTable() {
       {ponto && (
         <PontoPopup
           ponto={ponto}
-          desvios={desvios.filter((desvio) => desvio.ponto === ponto.nome)}
+          // Casa pelos dois nomes do mesmo lugar do MAHU: os desvios voltam rotulados com o
+          // ponto da CARTA CALCULADA (P1..P5), e esta tabela lista os pontos da CARTA ATUAL,
+          // cujos rótulos são os campos do painel (TT01, TT_04, ...).
+          desvios={desvios.filter(
+            (desvio) =>
+              desvio.ponto === ponto.nome || SLOT_POR_CAMPO[desvio.campo] === ponto.nome,
+          )}
           onFechar={() => setSelecionado(null)}
         />
       )}

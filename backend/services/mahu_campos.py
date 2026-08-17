@@ -50,9 +50,19 @@ class Campo:
 #
 # Uma troca de estação desloca todas elas. Por isso são sobrescrevíveis sem rebuild:
 #     MAHU_FAIXAS_ESPERADAS='{"tt01": [10, 28], "mt_01": [50, 100]}'
+# A ordem é a do PROCESSO, não a da tela: é ela que o formulário de conferência segue, e
+# conferir na ordem em que o ar atravessa o MAHU (entrada, pré-aquecimento, pré-resfriamento,
+# umidificação, saída) é o que deixa um valor fora de lugar saltar aos olhos.
 CAMPOS: list[Campo] = [
     Campo("mt_01", "MT_01", "%", 2, (0.0, 100.0), (60.0, 95.0), True),
     Campo("tt01", "TT01", "°C", 2, (-10.0, 60.0), (14.0, 24.0), True),
+    # Umidade absoluta do ar de entrada, medida direto pelo sensor do rodapé do painel.
+    # NÃO define ponto: quem posiciona a entrada é o par TT01+MT_01. Aqui ele é a terceira
+    # medição do mesmo estado, e serve para acusar quando as duas primeiras discordam.
+    Campo("mt_tt_mahu_21", "MT TT MAHU 2.1", "g/kg", 2, (0.0, 30.0), (5.0, 13.0), False),
+    # Saída da serpentina de pré-aquecimento. Único campo do painel em que o ar está mais
+    # QUENTE que na entrada, o que o deixa de fora da cadeia de resfriamento validada abaixo.
+    Campo("tt02", "TT_02", "°C", 2, (-10.0, 60.0), (14.0, 40.0), False),
     Campo("tt04", "TT_04", "°C", 1, (-10.0, 60.0), (9.0, 15.0), True),
     Campo("tt06", "TT_06", "°C", 1, (-10.0, 60.0), (7.0, 11.0), True),
     Campo("mt07", "MT07", "%", 2, (0.0, 100.0), (43.0, 58.0), True),
@@ -77,6 +87,12 @@ CAMPOS: list[Campo] = [
     # fotos de docs/fotosMahu; confirmar quando a telemetria de O5 existir.
     Campo("umd_abs_pv", "PID UMD ABS PV", "g/kg", 2, (0.0, 30.0), (6.0, 9.0), False),
     Campo("tt04_entalpia_pv", "PID TT04 ENTALPIA PV", "kJ/kg", 2, (0.0, 120.0), (25.0, 45.0), False),
+    # O SETPOINT de entalpia, não o PV. É o único campo cujo valor a planta persegue em vez
+    # de medir, e por isso é também o único que o usuário digita para simular: na Carta
+    # Calculada ele substitui `Setpoints.entalpia_alvo` e move a cadeia inteira.
+    #
+    # Mesma linha de 17 px do PV, uma acima — se o OCR errar, a digitação individual resolve.
+    Campo("tt04_entalpia_sp", "PID TT04 ENTALPIA SP", "kJ/kg", 2, (0.0, 120.0), (25.0, 45.0), False),
 ]
 
 ENV_FAIXAS_ESPERADAS = "MAHU_FAIXAS_ESPERADAS"

@@ -38,6 +38,16 @@ const ESTILO_BADGE: Record<MahuCampoStatus, string> = {
   unreadable: "text-rose-700",
 };
 
+/**
+ * Aceita vírgula decimal. O painel do MAHU escreve "20,80", o teclado do celular em pt-BR
+ * oferece vírgula, e é isso que a pessoa digita ao corrigir um campo — `Number("20,80")` é
+ * `NaN`, e o valor sumia sem explicação nenhuma.
+ */
+function paraNumero(bruto: string): number | null {
+  const numero = Number(bruto.replace(",", "."));
+  return Number.isFinite(numero) ? numero : null;
+}
+
 function descreverStatus(campo: MahuCampoOCR): string {
   if (campo.pv == null) {
     return campo.motivo ?? "não lido";
@@ -82,18 +92,22 @@ export function MahuReviewForm({ leitura }: MahuReviewFormProps) {
   // acumula fotos que deram certo.
   const [perguntandoMotivo, setPerguntandoMotivo] = useState(false);
 
-  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
 
     const numericos: Record<string, number> = {};
     for (const campo of leitura.campos) {
       const bruto = valores[campo.key]?.trim() ?? "";
-      const numero = Number(bruto);
-      if (bruto === "" || Number.isNaN(numero)) {
+      const numero = paraNumero(bruto);
+      if (bruto === "" || numero === null) {
         // Vazio nos campos do bloco SP/PV/MV é resultado normal: nem toda foto os resolve,
         // e o backend os aceita ausentes. Só os obrigatórios travam o envio.
         if (campo.obrigatorio) {
-          setErro(`Preencha um valor numérico para ${campo.label}.`);
+          setErro(
+            bruto === ""
+              ? `Preencha um valor numérico para ${campo.label}.`
+              : `"${bruto}" não é um número válido para ${campo.label}.`,
+          );
           return;
         }
         continue;
@@ -102,7 +116,10 @@ export function MahuReviewForm({ leitura }: MahuReviewFormProps) {
     }
 
     setErro(null);
-    void aplicarConferencia(numericos);
+    // A falha volta para CÁ, ao lado do botão. Antes ela só aparecia no `status`, no topo do
+    // painel: num formulário de onze campos, quem tocou no botão não vê o topo da tela, e a
+    // recusa ficava invisível.
+    setErro(await aplicarConferencia(numericos));
   };
 
   // O caminho feliz não pode parecer um pedido de correção: quando nada está duvidoso, o
@@ -114,7 +131,13 @@ export function MahuReviewForm({ leitura }: MahuReviewFormProps) {
   const camposComAviso = new Set(leitura.avisos.flatMap((aviso) => aviso.campos));
 
   return (
-    <form onSubmit={handleSubmit} className="mt-3 border-t border-gray-200 pt-3">
+    <form
+      onSubmit={(event) => void handleSubmit(event)}
+      // Nenhuma validação nativa: ela recusa o envio sem deixar rastro visível perto do
+      // botão. Quem valida é `handleSubmit`, que escreve o motivo logo acima dele.
+      noValidate
+      className="mt-3 border-t border-gray-200 pt-3"
+    >
       <h3 className="mb-2 text-sm font-semibold">Confira os valores lidos</h3>
 
       <p
@@ -151,12 +174,15 @@ export function MahuReviewForm({ leitura }: MahuReviewFormProps) {
             {campo.label} ({campo.unidade})
           </span>
           <input
-            type="number"
-            step="0.01"
+            // `text`, e não `number`: com `type="number"` o navegador RECUSA em silêncio o
+            // que ele considera inválido. Uma vírgula decimal esvazia o campo sem avisar, e
+            // um `required` vazio bloqueia o submit exibindo um balão preso ao input — que,
+            // numa barra lateral rolada até o botão, aparece fora da tela. O resultado é um
+            // botão que parece não fazer nada. A validação toda mora em `handleSubmit`.
+            type="text"
             // O fluxo inteiro acontece no celular, logo após a foto: teclado numérico.
             inputMode="decimal"
             value={valores[campo.key] ?? ""}
-            required={campo.obrigatorio}
             onChange={(event) =>
               setValores((atual) => ({ ...atual, [campo.key]: event.target.value }))
             }

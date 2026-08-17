@@ -25,7 +25,14 @@ export const SETPOINTS_INICIAIS: Setpoints = {
 };
 
 interface ProcessoState {
+  /** A CARTA CALCULADA: a cadeia que os setpoints impõem. */
   processo: ProcessoResponse | null;
+  /**
+   * A CARTA ATUAL: a mesma leitura montada só com os instrumentos do painel. `null` quando
+   * a origem não foi uma leitura de painel (entrada manual, histórico) — aí a Carta Atual
+   * cai de volta na calculada, para a tela não ficar com um lado vazio.
+   */
+  processoMedido: ProcessoResponse | null;
   setpoints: Setpoints;
   carregandoSetpoints: boolean;
   salvandoSetpoints: boolean;
@@ -33,22 +40,39 @@ interface ProcessoState {
   erro: string | null;
   /** Em qual das 4 regiões da estratégia otimizada o P1 atual cai. `null` até calcular. */
   regiaoOtimizada: number | null;
+  /**
+   * PID TT04 ENTALPIA (SP) digitado individualmente, um por carta.
+   *
+   * O da CALCULADA é simulação: entra na requisição e move a cadeia inteira daquela carta,
+   * sem gravar nada em `/setpoints` — a configuração da planta continua sendo a de lá.
+   *
+   * O da ATUAL é o SP que a planta está de fato perseguindo: acompanha a leitura até o
+   * backend e volta como desvio contra a entalpia calculada. Não move a Carta Atual, porque
+   * nela nenhum ponto vem de setpoint — todos vêm de instrumento.
+   */
+  entalpiaSpAtual: number | null;
+  entalpiaSpCalculada: number | null;
 
   carregarSetpoints: () => Promise<void>;
   atualizarSetpoints: (setpoints: Setpoints) => Promise<void>;
   aplicarProcesso: (processo: ProcessoResponse) => void;
   calcularDeEntrada: (tbs: number, ur: number) => Promise<void>;
+  definirEntalpiaSpAtual: (valor: number | null) => void;
+  definirEntalpiaSpCalculada: (valor: number | null) => Promise<void>;
   limpar: () => void;
 }
 
 export const useProcessoStore = create<ProcessoState>((set, get) => ({
   processo: null,
+  processoMedido: null,
   setpoints: SETPOINTS_INICIAIS,
   carregandoSetpoints: false,
   salvandoSetpoints: false,
   calculando: false,
   erro: null,
   regiaoOtimizada: null,
+  entalpiaSpAtual: null,
+  entalpiaSpCalculada: null,
 
   carregarSetpoints: async () => {
     set({ carregandoSetpoints: true });
@@ -83,22 +107,66 @@ export const useProcessoStore = create<ProcessoState>((set, get) => ({
   },
 
   aplicarProcesso: (processo) => {
-    set({ processo, setpoints: processo.setpoints, erro: null });
-    useChartStore.getState().aplicarPontosDoProcesso(processo);
+    // A CARTA ATUAL prefere a cadeia medida. Sem ela — entrada manual, histórico anterior à
+    // divisão das cartas — cai na calculada: um lado vazio da tela seria pior que dois lados
+    // mostrando a mesma coisa, e a tabela de propriedades ficaria sem nenhum ponto.
+    const medido = processo.medido ?? null;
+    set({
+      processo,
+      processoMedido: medido,
+      setpoints: processo.setpoints,
+      // O SP que veio na leitura: o backend o devolve como desvio, e é de lá que a caixa da
+      // Carta Atual se preenche sozinha depois de aplicar uma foto.
+      entalpiaSpAtual:
+        processo.desvios.find((desvio) => desvio.campo === "tt04_entalpia_sp")?.medido ??
+        get().entalpiaSpAtual,
+      erro: null,
+    });
+    useChartStore.getState().aplicarPontosDoProcesso(medido ?? processo);
 
-    // A carta otimizada segue o mesmo P1, calculada à parte: se a chamada falhar, a carta
-    // atual — que já teve sucesso — não pode ficar presa esperando por ela.
+    // A Carta Calculada segue o mesmo P1, calculada à parte: se a chamada falhar, a Carta
+    // Atual — que já teve sucesso — não pode ficar presa esperando por ela.
     const p1 = processo.pontos.find((ponto) => ponto.label === "P1");
     if (p1) {
-      calcularProcessoOtimizado({ tbs: p1.tbs, ur: p1.ur })
+      calcularProcessoOtimizado({
+        tbs: p1.tbs,
+        ur: p1.ur,
+        entalpia_alvo: get().entalpiaSpCalculada,
+      })
         .then((otimizado) => {
           useChartStoreOtimizada.getState().aplicarPontosDoProcesso(otimizado);
           set({ regiaoOtimizada: otimizado.regiao });
         })
         .catch(() => {
-          // A carta otimizada é um comparativo a mais; falhar aqui não pode derrubar a
-          // carta atual, que já está no ar.
+          // A Carta Calculada é um comparativo a mais; falhar aqui não pode derrubar a
+          // Carta Atual, que já está no ar.
         });
+    }
+  },
+
+  definirEntalpiaSpAtual: (valor) => set({ entalpiaSpAtual: valor }),
+
+  /**
+   * Redesenha só a Carta Calculada com o alvo informado. Não toca em `/setpoints`: o campo
+   * existe para experimentar um alvo, e gravar a configuração da planta a cada tecla
+   * mudaria o que os outros celulares estão vendo.
+   */
+  definirEntalpiaSpCalculada: async (valor) => {
+    set({ entalpiaSpCalculada: valor });
+    const p1 = get().processo?.pontos.find((ponto) => ponto.label === "P1");
+    if (!p1) {
+      return;
+    }
+    try {
+      const otimizado = await calcularProcessoOtimizado({
+        tbs: p1.tbs,
+        ur: p1.ur,
+        entalpia_alvo: valor,
+      });
+      useChartStoreOtimizada.getState().aplicarPontosDoProcesso(otimizado);
+      set({ regiaoOtimizada: otimizado.regiao });
+    } catch (error) {
+      set({ erro: describeError(error) });
     }
   },
 
@@ -113,5 +181,5 @@ export const useProcessoStore = create<ProcessoState>((set, get) => ({
     }
   },
 
-  limpar: () => set({ processo: null, erro: null }),
+  limpar: () => set({ processo: null, processoMedido: null, erro: null }),
 }));

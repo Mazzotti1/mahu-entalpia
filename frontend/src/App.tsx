@@ -1,6 +1,6 @@
 import { useState } from "react";
 
-import { GastoTermicoChart } from "@/components/GastoTermicoChart";
+import { EntalpiaSpInput } from "@/components/EntalpiaSpInput";
 import { HistoryPanel } from "@/components/HistoryPanel";
 import { IndicatorPanel } from "@/components/IndicatorPanel";
 import { LayerTogglesPanel } from "@/components/LayerTogglesPanel";
@@ -47,7 +47,7 @@ const ROTULOS_REGIAO: Record<number, string> = {
   4: "Região 4 (azul) — resfriar até 36 kJ/kg + umidificar/desumidificar",
 };
 
-/** Legenda da carta otimizada: qual das 4 regiões o P1 atual ocupa. */
+/** Legenda da Carta Calculada: qual das 4 regiões o P1 atual ocupa. */
 function LegendaRegiao() {
   const regiao = useProcessoStore((state) => state.regiaoOtimizada);
   if (regiao == null) {
@@ -68,13 +68,26 @@ function LegendaRegiao() {
  * aparelho está pedindo para ver o gráfico maior — deixar o painel empilhado por cima,
  * como acontecia antes, gastava a altura que a rotação tinha acabado de conseguir.
  *
- * No desktop, a sidebar ganha o mesmo tipo de gaveta: as duas cartas (atual e otimizada)
+ * No desktop, a sidebar ganha o mesmo tipo de gaveta: as duas cartas (ATUAL e CALCULADA)
  * lado a lado precisam do espaço que ela ocupa, então fechá-la também é uma opção aqui —
  * um estado à parte do `painelAberto` de paisagem, para não misturar os dois breakpoints.
+ *
+ * As duas cartas descrevem a MESMA leitura por caminhos diferentes: a ATUAL encadeia os
+ * instrumentos do painel, a CALCULADA encadeia os setpoints. Cada uma leva o seu próprio
+ * gasto térmico logo abaixo, porque a diferença entre os dois kW é o assunto da tela.
  */
 export default function App() {
   const [painelAberto, setPainelAberto] = useState(false);
   const [sidebarAbertaDesktop, setSidebarAbertaDesktop] = useState(true);
+
+  const processo = useProcessoStore((state) => state.processo);
+  const processoMedido = useProcessoStore((state) => state.processoMedido);
+  const entalpiaSpAtual = useProcessoStore((state) => state.entalpiaSpAtual);
+  const entalpiaSpCalculada = useProcessoStore((state) => state.entalpiaSpCalculada);
+  const definirEntalpiaSpAtual = useProcessoStore((state) => state.definirEntalpiaSpAtual);
+  const definirEntalpiaSpCalculada = useProcessoStore(
+    (state) => state.definirEntalpiaSpCalculada,
+  );
 
   return (
     <main className="flex min-h-screen flex-col desk:flex-row paisagem:h-dvh paisagem:min-h-0 paisagem:flex-row paisagem:overflow-hidden">
@@ -121,19 +134,40 @@ export default function App() {
 
         <div className="flex flex-col gap-4 cartas:flex-row">
           <div className="flex min-w-0 flex-1 flex-col">
-            <h3 className="mb-1 text-sm font-semibold text-slate-700">Carta atual</h3>
+            <h3 className="mb-1 text-sm font-semibold text-slate-700">CARTA ATUAL</h3>
+            <p className="text-[12px] text-slate-600 paisagem:hidden">
+              Pontos estritamente digitados/capturados do painel.
+            </p>
+            <EntalpiaSpInput
+              valor={entalpiaSpAtual}
+              aoConfirmar={definirEntalpiaSpAtual}
+              ajuda="O SP que a planta está perseguindo. Vai junto com a próxima leitura e volta como desvio; não move os pontos desta carta, que vêm todos de instrumento."
+            />
             <PsychrometricChart />
           </div>
           <div className="flex min-w-0 flex-1 flex-col">
-            <h3 className="mb-1 text-sm font-semibold text-slate-700">Carta otimizada</h3>
+            <h3 className="mb-1 text-sm font-semibold text-slate-700">CARTA CALCULADA</h3>
             <LegendaRegiao />
+            <EntalpiaSpInput
+              valor={entalpiaSpCalculada}
+              aoConfirmar={(valor) => void definirEntalpiaSpCalculada(valor)}
+              ajuda="Alvo de entalpia desta carta. Muda a cadeia inteira aqui, sem gravar nada nos setpoints da planta. Em branco, volta a escolha automática por região."
+            />
             <PsychrometricChart useStore={useChartStoreOtimizada} mostrarRegioes />
           </div>
         </div>
 
-        <ThermalLoadPanel />
+        <ThermalLoadPanel
+          processo={processoMedido}
+          titulo="Gasto térmico — CARTA ATUAL"
+          legenda="Calculado sobre os estados medidos no painel: o que a planta está de fato gastando."
+        />
+        <ThermalLoadPanel
+          processo={processo}
+          titulo="Gasto térmico — CARTA CALCULADA"
+          legenda="Calculado sobre a cadeia dos setpoints: o que a planta deveria gastar para o mesmo ar de entrada."
+        />
         <PropertiesTable />
-        <GastoTermicoChart />
       </section>
     </main>
   );

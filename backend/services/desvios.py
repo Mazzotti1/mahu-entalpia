@@ -7,6 +7,11 @@ de fato faz olhando a carta.
 
 TT01 e MT_01 ficam de fora: são a ENTRADA do processo, não têm previsão contra o que
 comparar.
+
+Desde a divisão em Carta Atual (medida) e Carta Calculada, os mesmos campos aparecem em
+dois papéis: em `processo_medido.py` eles POSICIONAM os pontos da Carta Atual; aqui eles
+são conferidos contra a Carta Calculada. A tabela de desvios é, literalmente, a distância
+entre as duas cartas.
 """
 
 from __future__ import annotations
@@ -34,18 +39,33 @@ class Desvio:
 
 # campo do painel -> (ponto do processo, rótulo, unidade, como extrair do estado)
 #
-# Agrupamento por ponto (revisado): TT01+MT_01 definem P1 (fora desta lista, são entrada).
-# TT_04 e a entalpia do PID TT04 formam P2. TT_06 e a umidade absoluta do PID UMD ABS
-# formam P3 — os dois descrevem o mesmo estado, após a umidificação (docs
-# especificacao-processo-mahu.md, Parte I §1). Antes, `umd_abs_pv` comparava contra P5,
-# que é o ponto de TT07/MT07: agrupamento errado, corrigido aqui.
+# É a MESMA lista de slots que a Carta Atual plota (`processo_medido.py`), vista do outro
+# lado: lá cada campo posiciona um ponto medido, aqui cada campo é confrontado com o que a
+# cadeia dos setpoints previu para o mesmo lugar do MAHU.
+#
+# TT01 e MT_01 ficam de fora: são a ENTRADA, comuns às duas cartas, e não têm previsão
+# contra o que comparar.
+#
+# `umd_abs_pv` compara contra P5, e não contra P3: por decisão do usuário (16/08/2026) ele é
+# a Umidade Absoluta FINAL, do mesmo estado que TT07/MT07. É também o que
+# `mahu_validacao._validar_umd_abs_informativo` já assumia — as duas leituras estavam
+# divergindo entre si, e agora concordam.
+#
+# `tt02` compara contra P1 porque a cadeia calculada não tem etapa de pré-aquecimento
+# (decisão do usuário: não criar a etapa). O desvio aí mede quanto o pré-aquecedor da planta
+# está de fato aquecendo — que é justamente o que a cadeia calculada ignora.
 _COMPARACOES: list[tuple[str, str, str, str, Callable[[Estado], float]]] = [
+    ("mt_tt_mahu_21", "P1", "W", "g/kg", lambda e: e.w),
+    ("tt02", "P1", "TBS", "°C", lambda e: e.tbs),
     ("tt04", "P2", "TBS", "°C", lambda e: e.tbs),
     ("tt04_entalpia_pv", "P2", "h", "kJ/kg", lambda e: e.entalpia),
+    # O SP do painel contra o alvo que ESTA execução usou: diz se o app está perseguindo a
+    # mesma entalpia que a planta.
+    ("tt04_entalpia_sp", "P2", "h (SP)", "kJ/kg", lambda e: e.entalpia),
     ("tt06", "P3", "TBU", "°C", lambda e: e.tbu),
-    ("umd_abs_pv", "P3", "W", "g/kg", lambda e: e.w),
     ("tt07", "P5", "TBS", "°C", lambda e: e.tbs),
     ("mt07", "P5", "UR", "%", lambda e: e.ur),
+    ("umd_abs_pv", "P5", "W", "g/kg", lambda e: e.w),
 ]
 
 

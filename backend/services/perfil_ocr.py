@@ -45,6 +45,23 @@ ROIS_PADRAO: dict[str, tuple[int, int, int, int]] = {
     "tt07": (1024, 120, 1059, 140),
     "umd_abs_pv": (919, 50, 942, 62),
     "tt04_entalpia_pv": (360, 59, 387, 72),
+    # --- ESTIMADAS, ainda não medidas sobre o corpus alinhado ---------------------------
+    # As cinco acima saíram da união das caixas detectadas em 9 fotos; estas três foram
+    # DERIVADAS da geometria do painel, e não medidas. Rode `scripts/afinar_ocr.py` assim
+    # que houver leituras com elas para trocar a estimativa por medição.
+    #
+    # Por isso os três campos correspondentes nascem `obrigatorio=False`: uma ROI errada
+    # aqui vira campo duvidoso na conferência, e nunca uma leitura bloqueada.
+    #
+    # `tt02` está na coluna do PID TT02, na mesma faixa vertical de `tt04` (ambos são o par
+    # rótulo/valor/unidade sob o bloco do PID). Um pouco mais larga que a de `tt04` porque a
+    # posição horizontal veio de proporção, não de medida.
+    "tt02": (236, 126, 284, 147),
+    # Uma linha ACIMA do PV, no mesmo bloco: SP, PV e MV ficam a 17 px um do outro.
+    "tt04_entalpia_sp": (360, 42, 387, 55),
+    # Caixa isolada do rodapé ("9,50 / g/Kg"). Folgada de propósito: não há texto vizinho
+    # que o recorte possa engolir, e a posição é a menos confiável das três.
+    "mt_tt_mahu_21": (525, 412, 600, 438),
 }
 
 # Trechos FIXOS do painel usados para medir a deriva local do alinhamento, um por campo.
@@ -66,6 +83,14 @@ ANCORAS_PADRAO: dict[str, tuple[int, int, int, int]] = {
     "tt07": (999, 87, 1034, 107),
     "umd_abs_pv": (916, 94, 939, 106),
     "tt04_entalpia_pv": (361, 100, 388, 113),
+    # Estimadas junto com as ROIs acima, pelo mesmo critério: texto fixo, perto do campo, sem
+    # encostar em ROI nenhuma.
+    # O rótulo "TT_02" impresso logo acima do valor.
+    "tt02": (236, 108, 284, 125),
+    # Mesmo bloco do PV, então a mesma deriva local: a âncora pode ser a mesma caixa.
+    "tt04_entalpia_sp": (361, 100, 388, 113),
+    # A unidade "g/Kg", impressa dentro da própria caixa do sensor, abaixo do número.
+    "mt_tt_mahu_21": (525, 440, 600, 458),
 }
 
 # Correlação mínima para a âncora contar como encontrada. Nas 9 fotos de referência a pior

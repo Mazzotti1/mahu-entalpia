@@ -107,7 +107,14 @@ class Processo:
 
     @property
     def ordem(self) -> list[str]:
-        return ["P1", "P2", "P3", "P4", "P5"]
+        """Os pontos na ordem em que o ar os atravessa.
+
+        Vem da ordem de inserção do dicionário, e não de uma lista P1..P5 escrita à mão: a
+        cadeia MEDIDA (`processo_medido.py`) tem outros rótulos e pode ter menos pontos que
+        cinco, quando um campo do painel não foi lido. Uma lista fixa devolveria rótulos que
+        não existem naquele processo e quebraria na primeira indexação.
+        """
+        return list(self.pontos)
 
 
 # --- Transformações ------------------------------------------------------------------
