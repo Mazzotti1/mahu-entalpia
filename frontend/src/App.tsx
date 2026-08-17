@@ -9,6 +9,7 @@ import { MahuPanel } from "@/components/MahuPanel";
 import { PropertiesTable } from "@/components/PropertiesTable";
 import { PsychrometricChart } from "@/components/PsychrometricChart";
 import { SetpointsPanel } from "@/components/SetpointsPanel";
+import { ThermalLoadPanel } from "@/components/ThermalLoadPanel";
 import { useAuthStore } from "@/store/useAuthStore";
 import { useChartStoreOtimizada } from "@/store/useChartStore";
 import { useProcessoStore } from "@/store/useProcessoStore";
@@ -86,6 +87,7 @@ export default function App() {
   const [painelAberto, setPainelAberto] = useState(false);
   const [sidebarAbertaDesktop, setSidebarAbertaDesktop] = useState(true);
 
+  const processo = useProcessoStore((state) => state.processo);
   const processoMedido = useProcessoStore((state) => state.processoMedido);
   const processoOtimizado = useProcessoStore((state) => state.processoOtimizado);
   const entalpiaSpAtual = useProcessoStore((state) => state.entalpiaSpAtual);
@@ -166,6 +168,20 @@ export default function App() {
           </div>
         </div>
 
+        <ThermalLoadPanel
+          processo={processoMedido}
+          titulo="Gasto térmico — CARTA ATUAL"
+          legenda="Calculado sobre os estados medidos no painel: o que a planta está de fato gastando."
+          // Os desvios são do processo dos setpoints, não da cadeia medida. Ficam aqui
+          // porque é aqui que a medição do painel está: conferi-los é perguntar se a planta
+          // está cumprindo o controle, e a resposta pertence ao lado medido.
+          desvios={processo?.desvios}
+        />
+        <ThermalLoadPanel
+          processo={processoOtimizado}
+          titulo="Gasto térmico — CARTA OTIMIZADA"
+          legenda="Calculado sobre a rota de menor custo a partir dos pontos 1 e 2 da carta atual."
+        />
         <ComparacaoPanel atual={processoMedido} otimizado={processoOtimizado} />
         <PropertiesTable />
       </section>

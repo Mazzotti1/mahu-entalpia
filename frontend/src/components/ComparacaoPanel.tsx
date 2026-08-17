@@ -2,13 +2,11 @@ import { formatarNumero } from "@/lib/format";
 import type { ProcessoResponse } from "@/types/api";
 
 /**
- * As duas cartas confrontadas: o que a planta está gastando contra o que ela gastaria pela
- * rota mais barata, e ponto a ponto onde as duas se separam.
+ * As duas cartas confrontadas numa linha por grandeza.
  *
- * Duas tabelas porque são duas perguntas diferentes. A primeira responde "quanto", em kW e
- * em reais, e é a que decide se vale mexer na planta. A segunda responde "onde": qual ponto
- * do MAHU está fora do lugar, que é o que diz O QUE mexer. Juntar as duas numa só faria a
- * linha do dinheiro competir por atenção com a linha da temperatura.
+ * Vem DEPOIS dos dois painéis de gasto térmico, e não no lugar deles: cada painel abre a
+ * sua cadeia etapa por etapa e responde "de onde saiu este kW". Esta tabela responde outra
+ * pergunta — "quanto a diferença custa" — e precisa das duas cadeias lado a lado para isso.
  */
 interface ComparacaoPanelProps {
   atual: ProcessoResponse | null;
@@ -86,112 +84,6 @@ function TabelaGastos({ linhas }: { linhas: LinhaGasto[] }) {
                 <td className="border border-gray-200 p-2 text-center tabular-nums">
                   {economiaPercentual(linha.atual, linha.otimizado)}
                 </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-const GRANDEZAS_DOS_PONTOS = [
-  { rotulo: "TBS (°C)", casas: 2, ler: (p: ProcessoResponse["pontos"][number]) => p.tbs },
-  { rotulo: "W (g/kg)", casas: 2, ler: (p: ProcessoResponse["pontos"][number]) => p.w },
-  { rotulo: "UR (%)", casas: 1, ler: (p: ProcessoResponse["pontos"][number]) => p.ur },
-  {
-    rotulo: "h (kJ/kg)",
-    casas: 2,
-    ler: (p: ProcessoResponse["pontos"][number]) => p.entalpia,
-  },
-] as const;
-
-function TabelaPontos({
-  atual,
-  otimizado,
-}: {
-  atual: ProcessoResponse;
-  otimizado: ProcessoResponse;
-}) {
-  // As duas cadeias usam os MESMOS rótulos (nomes dos campos do painel), e é isso que
-  // permite casar linha a linha. Um ponto que só exista de um lado — TT_02 ausente da
-  // leitura, por exemplo — aparece com traço em vez de sumir da tabela.
-  const rotulos = [...new Set([...atual.pontos, ...otimizado.pontos].map((p) => p.label))];
-  const porLabelAtual = new Map(atual.pontos.map((p) => [p.label, p]));
-  const porLabelOtimizado = new Map(otimizado.pontos.map((p) => [p.label, p]));
-
-  return (
-    <div className="overflow-x-auto">
-      <table className="w-full border-collapse text-sm">
-        <thead className="bg-slate-50">
-          <tr>
-            <th rowSpan={2} className="border border-gray-200 p-2 font-semibold">
-              Ponto
-            </th>
-            {GRANDEZAS_DOS_PONTOS.map((grandeza) => (
-              <th
-                key={grandeza.rotulo}
-                colSpan={2}
-                className="border border-gray-200 p-2 text-center font-semibold"
-              >
-                {grandeza.rotulo}
-              </th>
-            ))}
-          </tr>
-          <tr>
-            {GRANDEZAS_DOS_PONTOS.map((grandeza) => [
-              <th
-                key={`${grandeza.rotulo}-atual`}
-                className="border border-gray-200 px-2 py-1 text-center text-[11px] font-normal text-slate-500"
-              >
-                atual
-              </th>,
-              <th
-                key={`${grandeza.rotulo}-otimo`}
-                className="border border-gray-200 px-2 py-1 text-center text-[11px] font-normal text-slate-500"
-              >
-                otimizada
-              </th>,
-            ])}
-          </tr>
-        </thead>
-        <tbody>
-          {rotulos.map((rotulo) => {
-            const pontoAtual = porLabelAtual.get(rotulo);
-            const pontoOtimo = porLabelOtimizado.get(rotulo);
-            return (
-              <tr key={rotulo}>
-                <td className="border border-gray-200 p-2 text-center font-semibold">
-                  {rotulo}
-                </td>
-                {GRANDEZAS_DOS_PONTOS.map((grandeza) => {
-                  const valorAtual = pontoAtual ? grandeza.ler(pontoAtual) : null;
-                  const valorOtimo = pontoOtimo ? grandeza.ler(pontoOtimo) : null;
-                  // Diferença acima de meia unidade é o que vale destacar: abaixo disso é
-                  // arredondamento do painel, não decisão de operação.
-                  const divergente =
-                    valorAtual != null &&
-                    valorOtimo != null &&
-                    Math.abs(valorAtual - valorOtimo) >= 0.5;
-                  return [
-                    <td
-                      key={`${rotulo}-${grandeza.rotulo}-atual`}
-                      className={`border border-gray-200 p-2 text-center tabular-nums ${
-                        divergente ? "font-semibold text-rose-700" : ""
-                      }`}
-                    >
-                      {valorAtual == null ? "—" : formatarNumero(valorAtual, grandeza.casas)}
-                    </td>,
-                    <td
-                      key={`${rotulo}-${grandeza.rotulo}-otimo`}
-                      className={`border border-gray-200 p-2 text-center tabular-nums ${
-                        divergente ? "font-semibold text-emerald-700" : ""
-                      }`}
-                    >
-                      {valorOtimo == null ? "—" : formatarNumero(valorOtimo, grandeza.casas)}
-                    </td>,
-                  ];
-                })}
               </tr>
             );
           })}
@@ -292,7 +184,6 @@ export function ComparacaoPanel({ atual, otimizado }: ComparacaoPanelProps) {
           : "A operação atual já está na rota mais barata para esta condição de ar."}
       </p>
 
-      <h4 className="mb-1.5 text-sm font-semibold">1. Gastos</h4>
       <TabelaGastos linhas={linhas} />
 
       {otimizado.avisos.length > 0 && (
@@ -316,12 +207,6 @@ export function ComparacaoPanel({ atual, otimizado }: ComparacaoPanelProps) {
         </ul>
       )}
 
-      <h4 className="mt-4 mb-1.5 text-sm font-semibold">2. Valores dos pontos</h4>
-      <p className="mb-1.5 text-[11px] text-slate-500">
-        Em destaque, os pontos que divergem em meia unidade ou mais — são eles que produzem a
-        diferença de custo da tabela acima.
-      </p>
-      <TabelaPontos atual={atual} otimizado={otimizado} />
     </section>
   );
 }
