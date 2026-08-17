@@ -53,8 +53,18 @@ class Custo:
     reais_por_mes: float
 
 
-def calcular_custo(balanco: BalancoTermico, tarifas: Tarifas) -> Custo:
-    """Converte um balanço térmico em consumo elétrico e em reais.
+def calcular_custo_de_totais(
+    q_refrigeracao_kw: float,
+    q_aquecimento_kw: float,
+    agua_umidificacao_kg_h: float,
+    tarifas: Tarifas,
+) -> Custo:
+    """A conta a partir dos três totais, sem exigir o balanço inteiro.
+
+    Existe porque nem todo processo chega aqui com um `BalancoTermico` na mão: os do
+    histórico voltam do banco já agregados. Reresolver a cadeia só para saber quanto ela
+    custa daria outro resultado assim que os setpoints mudassem — e o histórico deixaria de
+    descrever o que de fato rodou.
 
     A umidificação adiabática não entra no elétrico de propósito — o calor dela vem do
     próprio ar e nenhuma máquina o forneceu (ver `energia.py`) — mas a água entra no
@@ -65,11 +75,11 @@ def calcular_custo(balanco: BalancoTermico, tarifas: Tarifas) -> Custo:
     cop = tarifas.cop_refrigeracao if tarifas.cop_refrigeracao > 0 else 1.0
     rendimento = tarifas.rendimento_aquecimento if tarifas.rendimento_aquecimento > 0 else 1.0
 
-    eletrico_frio = balanco.q_refrigeracao_kw / cop
-    eletrico_quente = balanco.q_aquecimento_kw / rendimento
+    eletrico_frio = q_refrigeracao_kw / cop
+    eletrico_quente = q_aquecimento_kw / rendimento
     eletrico_total = eletrico_frio + eletrico_quente
 
-    custo_agua = balanco.agua_umidificacao_kg_h / _DENSIDADE_AGUA * tarifas.preco_agua_m3
+    custo_agua = agua_umidificacao_kg_h / _DENSIDADE_AGUA * tarifas.preco_agua_m3
     reais_por_hora = eletrico_total * tarifas.preco_kwh + custo_agua
 
     return Custo(
@@ -79,4 +89,14 @@ def calcular_custo(balanco: BalancoTermico, tarifas: Tarifas) -> Custo:
         reais_por_hora=reais_por_hora,
         reais_por_dia=reais_por_hora * HORAS_POR_DIA,
         reais_por_mes=reais_por_hora * HORAS_POR_DIA * DIAS_POR_MES,
+    )
+
+
+def calcular_custo(balanco: BalancoTermico, tarifas: Tarifas) -> Custo:
+    """O custo de uma cadeia recém-resolvida."""
+    return calcular_custo_de_totais(
+        balanco.q_refrigeracao_kw,
+        balanco.q_aquecimento_kw,
+        balanco.agua_umidificacao_kg_h,
+        tarifas,
     )

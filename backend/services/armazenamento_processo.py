@@ -23,7 +23,7 @@ from backend.models import (
     SetpointsInput,
     TotaisProcessoResponse,
 )
-from backend.services.custos import Custo, Tarifas
+from backend.services.custos import Custo, Tarifas, calcular_custo_de_totais
 from backend.services.desvios import Desvio
 from backend.services.energia import BalancoTermico
 from backend.services.processo import Processo, Setpoints
@@ -266,6 +266,17 @@ async def ler_processo_por_simulacao(simulacao_id: int) -> ProcessoResponse | No
         )
         desvios = await cursor.fetchall()
 
+    # Custo com as tarifas de HOJE, e não com as do dia da leitura: tarifa não é
+    # psicrometria, não move nenhum ponto gravado, e a pergunta que o histórico responde é
+    # "quanto esta condição de ar custaria agora". Sem esta linha a tabela de comparação
+    # some ao abrir uma leitura do histórico, porque ela exige preço nos dois lados.
+    custo = calcular_custo_de_totais(
+        cabecalho["q_refrigeracao_kw"],
+        cabecalho["q_aquecimento_kw"],
+        cabecalho["agua_umidificacao_kg_h"],
+        para_tarifas(await ler_setpoints()),
+    )
+
     return ProcessoResponse(
         id=cabecalho["id"],
         simulacao_id=simulacao_id,
@@ -332,6 +343,7 @@ async def ler_processo_por_simulacao(simulacao_id: int) -> ProcessoResponse | No
             for linha in desvios
         ],
         delta_h_entalpia=cabecalho["delta_h_entalpia"],
+        custo=custo_para_response(custo),
     )
 
 

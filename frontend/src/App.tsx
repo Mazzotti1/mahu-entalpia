@@ -97,6 +97,12 @@ export default function App() {
     (state) => state.definirEntalpiaSpOtimizada,
   );
 
+  // O MESMO fallback que o GRÁFICO da Carta Atual já faz em `aplicarProcesso`: sem leitura
+  // de painel não existe cadeia medida, e a carta passa a mostrar a dos setpoints. As
+  // tabelas não seguiam esse fallback e simplesmente sumiam — deixando a tela com o gasto
+  // da otimizada sozinho, sem nada contra o que comparar, na entrada manual e no histórico.
+  const cartaAtual = processoMedido ?? processo;
+
   return (
     <main className="flex min-h-screen flex-col desk:flex-row paisagem:h-dvh paisagem:min-h-0 paisagem:flex-row paisagem:overflow-hidden">
       <aside
@@ -169,9 +175,13 @@ export default function App() {
         </div>
 
         <ThermalLoadPanel
-          processo={processoMedido}
+          processo={cartaAtual}
           titulo="Gasto térmico — CARTA ATUAL"
-          legenda="Calculado sobre os estados medidos no painel: o que a planta está de fato gastando."
+          legenda={
+            processoMedido
+              ? "Calculado sobre os estados medidos no painel: o que a planta está de fato gastando."
+              : "Sem leitura de painel nesta entrada — mostra a cadeia dos setpoints, igual ao gráfico acima."
+          }
           // Os desvios são do processo dos setpoints, não da cadeia medida. Ficam aqui
           // porque é aqui que a medição do painel está: conferi-los é perguntar se a planta
           // está cumprindo o controle, e a resposta pertence ao lado medido.
@@ -182,7 +192,7 @@ export default function App() {
           titulo="Gasto térmico — CARTA OTIMIZADA"
           legenda="Calculado sobre a rota de menor custo a partir dos pontos 1 e 2 da carta atual."
         />
-        <ComparacaoPanel atual={processoMedido} otimizado={processoOtimizado} />
+        <ComparacaoPanel atual={cartaAtual} otimizado={processoOtimizado} />
         <PropertiesTable />
       </section>
     </main>

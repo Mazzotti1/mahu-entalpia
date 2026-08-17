@@ -113,7 +113,14 @@ async def calcular_processo(
     processo_id = await gravar_processo(simulacao.id, processo, balanco)
 
     return montar_response(
-        processo, balanco, processo_id=processo_id, simulacao_id=simulacao.id
+        processo,
+        balanco,
+        processo_id=processo_id,
+        simulacao_id=simulacao.id,
+        # Sem custo aqui a tabela de comparação não aparece: ela exige preço nos DOIS lados.
+        # Entrada manual não produz cadeia medida, e é esta que faz o papel de Carta Atual
+        # quando não houve foto do painel.
+        custo=calcular_custo(balanco, para_tarifas(setpoints)),
     )
 
 
